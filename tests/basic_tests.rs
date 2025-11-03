@@ -5,6 +5,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // Counter for unique test schemas
 static TEST_SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+// Initialize tracing subscriber for tests with INFO level
+static INIT: std::sync::Once = std::sync::Once::new();
+
+fn init_test_logging() {
+    INIT.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_test_writer()
+            .init();
+    });
+}
+
 /// Helper to get a unique test schema name
 fn get_test_schema() -> String {
     let counter = TEST_SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -20,6 +32,7 @@ fn get_database_url() -> String {
 
 #[tokio::test]
 async fn test_provider_creation() {
+    init_test_logging();
     let database_url = get_database_url();
     let schema_name = get_test_schema();
     
@@ -44,6 +57,7 @@ async fn test_provider_creation() {
 
 #[tokio::test]
 async fn test_provider_creation_default_schema() {
+    init_test_logging();
     let database_url = get_database_url();
     
     // Test provider creation with default schema (public)
@@ -97,6 +111,7 @@ async fn test_provider_creation_default_schema() {
 
 #[tokio::test]
 async fn test_schema_initialization() {
+    init_test_logging();
     let database_url = get_database_url();
     let schema_name = get_test_schema();
     
@@ -132,6 +147,7 @@ async fn test_schema_initialization() {
 
 #[tokio::test]
 async fn test_read_empty_instance() {
+    init_test_logging();
     let database_url = get_database_url();
     let schema_name = get_test_schema();
     
@@ -148,6 +164,7 @@ async fn test_read_empty_instance() {
 
 #[tokio::test]
 async fn test_enqueue_orchestrator_work() {
+    init_test_logging();
     let database_url = get_database_url();
     let schema_name = get_test_schema();
     
@@ -186,6 +203,7 @@ async fn test_enqueue_orchestrator_work() {
 
 #[tokio::test]
 async fn test_enqueue_and_dequeue_worker() {
+    init_test_logging();
     let database_url = get_database_url();
     let schema_name = get_test_schema();
     
@@ -233,6 +251,7 @@ async fn test_enqueue_and_dequeue_worker() {
 
 #[tokio::test]
 async fn test_fetch_orchestration_item_empty_queue() {
+    init_test_logging();
     let database_url = get_database_url();
     let schema_name = get_test_schema();
     
@@ -249,6 +268,7 @@ async fn test_fetch_orchestration_item_empty_queue() {
 
 #[tokio::test]
 async fn test_management_capability() {
+    init_test_logging();
     let database_url = get_database_url();
     let schema_name = get_test_schema();
     
@@ -280,6 +300,7 @@ async fn test_management_capability() {
 
 #[tokio::test]
 async fn test_list_instances_and_executions() {
+    init_test_logging();
     let database_url = get_database_url();
     let schema_name = get_test_schema();
     

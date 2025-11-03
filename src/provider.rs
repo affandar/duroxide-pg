@@ -6,6 +6,7 @@ use uuid::Uuid;
 use anyhow::Result;
 use std::time::{SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, Utc};
+use tracing::{debug, error, instrument};
 
 pub struct PostgresProvider {
     pool: Arc<PgPool>,
@@ -45,6 +46,7 @@ impl PostgresProvider {
         Ok(provider)
     }
 
+    #[instrument(skip(self), target = "duroxide::providers::postgres")]
     pub async fn initialize_schema(&self) -> Result<()> {
         // Create tables using schema-qualified names
 
@@ -263,8 +265,22 @@ impl PostgresProvider {
 
 #[async_trait::async_trait]
 impl Provider for PostgresProvider {
+    #[instrument(skip(self), target = "duroxide::providers::postgres")]
     async fn fetch_orchestration_item(&self) -> Option<OrchestrationItem> {
-        let mut tx = self.pool.begin().await.ok()?;
+        let start = std::time::Instant::now();
+        let mut tx = match self.pool.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                error!(
+                    target = "duroxide::providers::postgres",
+                    operation = "fetch_orchestration_item",
+                    error_type = "transaction_failed",
+                    error = %e,
+                    "Failed to start transaction"
+                );
+                return None;
+            }
+        };
         let now_ms = Self::now_millis();
 
         // Step 1: Find an instance that has visible messages AND is not locked (or lock expired)
@@ -292,9 +308,21 @@ impl Provider for PostgresProvider {
             Some((id,)) => id,
             None => {
                 tx.rollback().await.ok();
+                debug!(
+                    target = "duroxide::providers::postgres",
+                    operation = "fetch_orchestration_item",
+                    "No available instances"
+                );
                 return None;
             }
         };
+
+        debug!(
+            target = "duroxide::providers::postgres",
+            operation = "fetch_orchestration_item",
+            instance_id = %instance_id,
+            "Selected available instance"
+        );
 
         // Step 2: Atomically acquire instance lock
         let lock_token = Self::generate_lock_token();
@@ -321,6 +349,12 @@ impl Provider for PostgresProvider {
 
         if lock_result.rows_affected() == 0 {
             // Failed to acquire lock (lock still held by another worker)
+            debug!(
+                target = "duroxide::providers::postgres",
+                operation = "fetch_orchestration_item",
+                instance_id = %instance_id,
+                "Failed to acquire instance lock (already locked)"
+            );
             tx.rollback().await.ok();
             return None;
         }
@@ -360,6 +394,12 @@ impl Provider for PostgresProvider {
 
         if message_rows.is_empty() {
             // No messages for instance (shouldn't happen), release lock and rollback
+            error!(
+                target = "duroxide::providers::postgres",
+                operation = "fetch_orchestration_item",
+                instance_id = %instance_id,
+                "No messages found for locked instance"
+            );
             sqlx::query(&format!(
                 "DELETE FROM {} WHERE instance_id = $1",
                 self.table_name("instance_locks")
@@ -379,6 +419,14 @@ impl Provider for PostgresProvider {
                 serde_json::from_str::<WorkItem>(&work_item_json).ok()
             })
             .collect();
+
+        debug!(
+            target = "duroxide::providers::postgres",
+            operation = "fetch_orchestration_item",
+            instance_id = %instance_id,
+            message_count = messages.len(),
+            "Fetched and marked messages for locked instance"
+        );
 
         // Step 5: Load instance metadata
         let instance_info: Option<(String, String, i64)> = sqlx::query_as(&format!(
@@ -430,6 +478,18 @@ impl Provider for PostgresProvider {
 
         tx.commit().await.ok()?;
 
+        let duration_ms = start.elapsed().as_millis() as u64;
+        debug!(
+            target = "duroxide::providers::postgres",
+            operation = "fetch_orchestration_item",
+            instance_id = %instance_id,
+            execution_id = current_execution_id,
+            message_count = messages.len(),
+            history_count = history.len(),
+            duration_ms = duration_ms,
+            "Fetched orchestration item"
+        );
+
         Some(OrchestrationItem {
             instance: instance_id,
             orchestration_name,
@@ -441,6 +501,7 @@ impl Provider for PostgresProvider {
         })
     }
 
+    #[instrument(skip(self), fields(lock_token = %lock_token, execution_id = execution_id), target = "duroxide::providers::postgres")]
     async fn ack_orchestration_item(
         &self,
         lock_token: &str,
@@ -450,9 +511,21 @@ impl Provider for PostgresProvider {
         orchestrator_items: Vec<WorkItem>,
         metadata: ExecutionMetadata,
     ) -> Result<(), String> {
+        let start = std::time::Instant::now();
         // ALL operations must be atomic (single transaction)
-        let mut tx = self.pool.begin().await
-            .map_err(|e| format!("Failed to start transaction: {}", e))?;
+        let mut tx = match self.pool.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                error!(
+                    target = "duroxide::providers::postgres",
+                    operation = "ack_orchestration_item",
+                    error_type = "transaction_failed",
+                    error = %e,
+                    "Failed to start transaction"
+                );
+                return Err(format!("Failed to start transaction: {}", e));
+            }
+        };
 
         // Step 1: Validate lock token and get instance_id
         let instance_id_row: Option<(String,)> = sqlx::query_as(&format!(
@@ -468,13 +541,28 @@ impl Provider for PostgresProvider {
         let instance_id = match instance_id_row {
             Some((id,)) => id,
             None => {
+                error!(
+                    target = "duroxide::providers::postgres",
+                    operation = "ack_orchestration_item",
+                    error_type = "invalid_lock_token",
+                    lock_token = %lock_token,
+                    "Invalid or expired lock token"
+                );
                 tx.rollback().await.ok();
                 return Err("Invalid or expired lock token".to_string());
             }
         };
 
-        // Step 2: Remove instance lock (will be deleted at end, but validate now)
-        // We'll delete it at the end after all operations succeed
+        debug!(
+            target = "duroxide::providers::postgres",
+            operation = "ack_orchestration_item",
+            instance_id = %instance_id,
+            execution_id = execution_id,
+            history_delta_len = history_delta.len(),
+            worker_items_len = worker_items.len(),
+            orchestrator_items_len = orchestrator_items.len(),
+            "Acking orchestration item"
+        );
 
         // Step 3: Idempotently create execution row
         sqlx::query(&format!(
@@ -680,19 +768,52 @@ impl Provider for PostgresProvider {
         .map_err(|e| format!("Failed to remove instance lock: {}", e))?;
 
         // Commit transaction - all operations succeed or all fail
-        tx.commit().await
-            .map_err(|e| format!("Failed to commit transaction: {}", e))?;
-
-        Ok(())
+        match tx.commit().await {
+            Ok(_) => {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                debug!(
+                    target = "duroxide::providers::postgres",
+                    operation = "ack_orchestration_item",
+                    instance_id = %instance_id,
+                    execution_id = execution_id,
+                    duration_ms = duration_ms,
+                    "Acknowledged orchestration item and released lock"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                error!(
+                    target = "duroxide::providers::postgres",
+                    operation = "ack_orchestration_item",
+                    error_type = "transaction_failed",
+                    error = %e,
+                    instance_id = %instance_id,
+                    "Failed to commit transaction"
+                );
+                Err(format!("Failed to commit transaction: {}", e))
+            }
+        }
     }
 
+    #[instrument(skip(self), fields(lock_token = %lock_token), target = "duroxide::providers::postgres")]
     async fn abandon_orchestration_item(
         &self,
         lock_token: &str,
         delay_ms: Option<u64>,
     ) -> Result<(), String> {
-        let mut tx = self.pool.begin().await
-            .map_err(|e| format!("Failed to start transaction: {}", e))?;
+        let mut tx = match self.pool.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                error!(
+                    target = "duroxide::providers::postgres",
+                    operation = "abandon_orchestration_item",
+                    error_type = "transaction_failed",
+                    error = %e,
+                    "Failed to start transaction"
+                );
+                return Err(format!("Failed to start transaction: {}", e));
+            }
+        };
 
         // Step 1: Validate lock token and get instance_id
         let instance_id_row: Option<(String,)> = sqlx::query_as(&format!(
@@ -743,9 +864,18 @@ impl Provider for PostgresProvider {
         tx.commit().await
             .map_err(|e| format!("Failed to commit transaction: {}", e))?;
 
+        debug!(
+            target = "duroxide::providers::postgres",
+            operation = "abandon_orchestration_item",
+            instance_id = %instance_id,
+            delay_ms = delay_ms,
+            "Abandoned orchestration item"
+        );
+
         Ok(())
     }
 
+    #[instrument(skip(self), fields(instance = %instance), target = "duroxide::providers::postgres")]
     async fn read(&self, instance: &str) -> Vec<Event> {
         // Get latest execution ID
         let execution_id: Option<i64> = sqlx::query_scalar(&format!(
@@ -781,6 +911,7 @@ impl Provider for PostgresProvider {
             .collect()
     }
 
+    #[instrument(skip(self), fields(instance = %instance, execution_id = execution_id), target = "duroxide::providers::postgres")]
     async fn append_with_execution(
         &self,
         instance: &str,
@@ -794,11 +925,20 @@ impl Provider for PostgresProvider {
         // Validate that runtime provided event_ids
         for event in &new_events {
             if event.event_id() == 0 {
+                error!(
+                    target = "duroxide::providers::postgres",
+                    operation = "append_with_execution",
+                    error_type = "validation_error",
+                    instance_id = %instance,
+                    execution_id = execution_id,
+                    "event_id must be set by runtime"
+                );
                 return Err("event_id must be set by runtime".to_string());
             }
         }
 
         let history_table = self.table_name("history");
+        let event_count = new_events.len();
 
         // Use a transaction for batch insert
         let mut tx = self.pool.begin().await.map_err(|e| format!("Failed to start transaction: {}", e))?;
@@ -826,9 +966,19 @@ impl Provider for PostgresProvider {
 
         tx.commit().await.map_err(|e| format!("Failed to commit transaction: {}", e))?;
 
+        debug!(
+            target = "duroxide::providers::postgres",
+            operation = "append_with_execution",
+            instance_id = %instance,
+            execution_id = execution_id,
+            event_count = event_count,
+            "Appended history events"
+        );
+
         Ok(())
     }
 
+    #[instrument(skip(self), target = "duroxide::providers::postgres")]
     async fn enqueue_worker_work(&self, item: WorkItem) -> Result<(), String> {
         let work_item = serde_json::to_string(&item)
             .map_err(|e| format!("Failed to serialize work item: {}", e))?;
@@ -840,12 +990,23 @@ impl Provider for PostgresProvider {
         .bind(work_item)
         .execute(&*self.pool)
         .await
-        .map_err(|e| format!("Failed to enqueue worker work: {}", e))?;
+        .map_err(|e| {
+            error!(
+                target = "duroxide::providers::postgres",
+                operation = "enqueue_worker_work",
+                error_type = "database_error",
+                error = %e,
+                "Failed to enqueue worker work"
+            );
+            format!("Failed to enqueue worker work: {}", e)
+        })?;
 
         Ok(())
     }
 
+    #[instrument(skip(self), target = "duroxide::providers::postgres")]
     async fn dequeue_worker_peek_lock(&self) -> Option<(WorkItem, String)> {
+        let start = std::time::Instant::now();
         // Use SELECT FOR UPDATE SKIP LOCKED for atomic lock acquisition
         let row: Option<(i64, String)> = sqlx::query_as(&format!(
             r#"
@@ -890,10 +1051,20 @@ impl Provider for PostgresProvider {
             return None; // Row was already locked by another process
         }
 
+        let duration_ms = start.elapsed().as_millis() as u64;
+        debug!(
+            target = "duroxide::providers::postgres",
+            operation = "dequeue_worker_peek_lock",
+            duration_ms = duration_ms,
+            "Dequeued worker work item"
+        );
+
         Some((work_item, lock_token))
     }
 
+    #[instrument(skip(self), fields(token = %token), target = "duroxide::providers::postgres")]
     async fn ack_worker(&self, token: &str, completion: WorkItem) -> Result<(), String> {
+        let start = std::time::Instant::now();
         // Start transaction for atomic delete + enqueue
         let mut tx = self.pool.begin().await
             .map_err(|e| format!("Failed to start transaction: {}", e))?;
@@ -910,6 +1081,13 @@ impl Provider for PostgresProvider {
             .rows_affected();
 
         if rows_affected == 0 {
+            error!(
+                target = "duroxide::providers::postgres",
+                operation = "ack_worker",
+                error_type = "worker_item_not_found",
+                token = %token,
+                "Worker queue item not found or already processed"
+            );
             return Err("Worker queue item not found or already processed".to_string());
         }
 
@@ -921,7 +1099,15 @@ impl Provider for PostgresProvider {
         let instance_id = match &completion {
             WorkItem::ActivityCompleted { instance, .. } |
             WorkItem::ActivityFailed { instance, .. } => instance,
-            _ => return Err("Invalid completion work item type".to_string()),
+            _ => {
+                error!(
+                    target = "duroxide::providers::postgres",
+                    operation = "ack_worker",
+                    error_type = "invalid_completion_type",
+                    "Invalid completion work item type"
+                );
+                return Err("Invalid completion work item type".to_string());
+            }
         };
 
         sqlx::query(&format!(
@@ -937,9 +1123,19 @@ impl Provider for PostgresProvider {
         tx.commit().await
             .map_err(|e| format!("Failed to commit transaction: {}", e))?;
 
+        let duration_ms = start.elapsed().as_millis() as u64;
+        debug!(
+            target = "duroxide::providers::postgres",
+            operation = "ack_worker",
+            instance_id = %instance_id,
+            duration_ms = duration_ms,
+            "Acknowledged worker and enqueued completion"
+        );
+
         Ok(())
     }
 
+    #[instrument(skip(self), target = "duroxide::providers::postgres")]
     async fn enqueue_orchestrator_work(
         &self,
         item: WorkItem,
@@ -1020,11 +1216,30 @@ impl Provider for PostgresProvider {
         .bind(visible_at)
         .execute(&*self.pool)
         .await
-        .map_err(|e| format!("Failed to enqueue orchestrator work: {}", e))?;
+        .map_err(|e| {
+            error!(
+                target = "duroxide::providers::postgres",
+                operation = "enqueue_orchestrator_work",
+                error_type = "database_error",
+                error = %e,
+                instance_id = %instance_id,
+                "Failed to enqueue orchestrator work"
+            );
+            format!("Failed to enqueue orchestrator work: {}", e)
+        })?;
+
+        debug!(
+            target = "duroxide::providers::postgres",
+            operation = "enqueue_orchestrator_work",
+            instance_id = %instance_id,
+            delay_ms = delay_ms,
+            "Enqueued orchestrator work"
+        );
 
         Ok(())
     }
 
+    #[instrument(skip(self), fields(instance = %instance), target = "duroxide::providers::postgres")]
     async fn read_with_execution(&self, instance: &str, execution_id: u64) -> Vec<Event> {
         let event_data_rows: Vec<String> = sqlx::query_scalar(&format!(
             "SELECT event_data FROM {} WHERE instance_id = $1 AND execution_id = $2 ORDER BY event_id",
@@ -1043,6 +1258,7 @@ impl Provider for PostgresProvider {
             .collect()
     }
 
+    #[instrument(skip(self), fields(instance = %instance), target = "duroxide::providers::postgres")]
     async fn latest_execution_id(&self, instance: &str) -> Option<u64> {
         sqlx::query_scalar(&format!(
             "SELECT current_execution_id FROM {} WHERE instance_id = $1",
@@ -1056,6 +1272,7 @@ impl Provider for PostgresProvider {
         .map(|id: i64| id as u64)
     }
 
+    #[instrument(skip(self), target = "duroxide::providers::postgres")]
     async fn list_instances(&self) -> Vec<String> {
         sqlx::query_scalar(&format!(
             "SELECT instance_id FROM {} ORDER BY created_at DESC",
@@ -1067,6 +1284,7 @@ impl Provider for PostgresProvider {
         .unwrap_or_default()
     }
 
+    #[instrument(skip(self), fields(instance = %instance), target = "duroxide::providers::postgres")]
     async fn list_executions(&self, instance: &str) -> Vec<u64> {
         let execution_ids: Vec<i64> = sqlx::query_scalar(&format!(
             "SELECT execution_id FROM {} WHERE instance_id = $1 ORDER BY execution_id",
@@ -1088,6 +1306,7 @@ impl Provider for PostgresProvider {
 
 #[async_trait::async_trait]
 impl ManagementCapability for PostgresProvider {
+    #[instrument(skip(self), target = "duroxide::providers::postgres")]
     async fn list_instances(&self) -> Result<Vec<String>, String> {
         sqlx::query_scalar(&format!(
             "SELECT instance_id FROM {} ORDER BY created_at DESC",
@@ -1098,6 +1317,7 @@ impl ManagementCapability for PostgresProvider {
         .map_err(|e| format!("Failed to list instances: {}", e))
     }
 
+    #[instrument(skip(self), fields(status = %status), target = "duroxide::providers::postgres")]
     async fn list_instances_by_status(&self, status: &str) -> Result<Vec<String>, String> {
         sqlx::query_scalar(&format!(
             r#"
@@ -1117,6 +1337,7 @@ impl ManagementCapability for PostgresProvider {
         .map_err(|e| format!("Failed to list instances by status: {}", e))
     }
 
+    #[instrument(skip(self), fields(instance = %instance), target = "duroxide::providers::postgres")]
     async fn list_executions(&self, instance: &str) -> Result<Vec<u64>, String> {
         let execution_ids: Vec<i64> = sqlx::query_scalar(&format!(
             "SELECT execution_id FROM {} WHERE instance_id = $1 ORDER BY execution_id",
@@ -1130,6 +1351,7 @@ impl ManagementCapability for PostgresProvider {
         Ok(execution_ids.into_iter().map(|id| id as u64).collect())
     }
 
+    #[instrument(skip(self), fields(instance = %instance, execution_id = execution_id), target = "duroxide::providers::postgres")]
     async fn read_execution(&self, instance: &str, execution_id: u64) -> Result<Vec<Event>, String> {
         let event_data_rows: Vec<String> = sqlx::query_scalar(&format!(
             "SELECT event_data FROM {} WHERE instance_id = $1 AND execution_id = $2 ORDER BY event_id",
@@ -1150,6 +1372,7 @@ impl ManagementCapability for PostgresProvider {
             .collect()
     }
 
+    #[instrument(skip(self), fields(instance = %instance), target = "duroxide::providers::postgres")]
     async fn latest_execution_id(&self, instance: &str) -> Result<u64, String> {
         sqlx::query_scalar(&format!(
             "SELECT current_execution_id FROM {} WHERE instance_id = $1",
@@ -1163,6 +1386,7 @@ impl ManagementCapability for PostgresProvider {
         .ok_or_else(|| "Instance not found".to_string())
     }
 
+    #[instrument(skip(self), fields(instance = %instance), target = "duroxide::providers::postgres")]
     async fn get_instance_info(&self, instance: &str) -> Result<InstanceInfo, String> {
         let row: Option<(String, String, String, i64, chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>, Option<String>, Option<String>)> = sqlx::query_as(&format!(
             r#"
@@ -1197,6 +1421,7 @@ impl ManagementCapability for PostgresProvider {
         })
     }
 
+    #[instrument(skip(self), fields(instance = %instance, execution_id = execution_id), target = "duroxide::providers::postgres")]
     async fn get_execution_info(&self, instance: &str, execution_id: u64) -> Result<ExecutionInfo, String> {
         let row: Option<(i64, String, Option<String>, chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>)> = sqlx::query_as(&format!(
             r#"
@@ -1237,6 +1462,7 @@ impl ManagementCapability for PostgresProvider {
         })
     }
 
+    #[instrument(skip(self), target = "duroxide::providers::postgres")]
     async fn get_system_metrics(&self) -> Result<SystemMetrics, String> {
         // Get total instances
         let total_instances: i64 = sqlx::query_scalar(&format!(
@@ -1323,6 +1549,7 @@ impl ManagementCapability for PostgresProvider {
         })
     }
 
+    #[instrument(skip(self), target = "duroxide::providers::postgres")]
     async fn get_queue_depths(&self) -> Result<QueueDepths, String> {
         let now_ms = Self::now_millis();
 
