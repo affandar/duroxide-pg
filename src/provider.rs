@@ -216,11 +216,6 @@ impl PostgresProvider {
             .as_millis() as i64
     }
 
-    /// Get future timestamp in milliseconds
-    fn timestamp_after_ms(delay_ms: u64) -> i64 {
-        Self::now_millis() + delay_ms as i64
-    }
-
     /// Get schema-qualified table name
     fn table_name(&self, table: &str) -> String {
         format!("{}.{}", self.schema_name, table)
@@ -325,12 +320,13 @@ impl Provider for PostgresProvider {
         let instance_id = match instance_id_row {
             Some((id,)) => id,
             None => {
-                tx.rollback().await.ok();
                 debug!(
                     target = "duroxide::providers::postgres",
                     operation = "fetch_orchestration_item",
+                    now_ms = now_ms,
                     "No available instances"
                 );
+                tx.rollback().await.ok();
                 return None;
             }
         };
@@ -344,7 +340,7 @@ impl Provider for PostgresProvider {
 
         // Step 2: Atomically acquire instance lock
         let lock_token = Self::generate_lock_token();
-        let locked_until = Self::timestamp_after_ms(self.lock_timeout_ms);
+        let locked_until = now_ms + self.lock_timeout_ms as i64;
 
         let lock_result = sqlx::query(&format!(
             r#"
@@ -366,11 +362,12 @@ impl Provider for PostgresProvider {
         .ok()?;
 
         if lock_result.rows_affected() == 0 {
-            // Failed to acquire lock (lock still held by another worker)
             debug!(
                 target = "duroxide::providers::postgres",
                 operation = "fetch_orchestration_item",
                 instance_id = %instance_id,
+                now_ms = now_ms,
+                locked_until = locked_until,
                 "Failed to acquire instance lock (already locked)"
             );
             tx.rollback().await.ok();
@@ -416,6 +413,9 @@ impl Provider for PostgresProvider {
                 target = "duroxide::providers::postgres",
                 operation = "fetch_orchestration_item",
                 instance_id = %instance_id,
+                now_ms = now_ms,
+                lock_token = %lock_token,
+                locked_until = locked_until,
                 "No messages found for locked instance"
             );
             sqlx::query(&format!(
@@ -1089,7 +1089,8 @@ impl Provider for PostgresProvider {
 
         // Generate lock token and calculate expiration
         let lock_token = Self::generate_lock_token();
-        let locked_until = Self::timestamp_after_ms(self.lock_timeout_ms);
+        let now_ms = Self::now_millis();
+        let locked_until = now_ms + self.lock_timeout_ms as i64;
 
         // Update the row with lock token
         let rows_affected = sqlx::query(&format!(
