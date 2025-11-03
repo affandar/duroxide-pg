@@ -1,0 +1,15 @@
+[package]
+name = "duroxide-pg"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+duroxide = { git = "https://github.com/affandar/duroxide", features = ["provider-test"] }
+async-trait = "0.1"
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono"], default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dotenvy = "0.15"
+uuid = { version = "1.0", features = ["v4"] }
+anyhow = "1.0"
