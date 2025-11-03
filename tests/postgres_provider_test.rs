@@ -3,11 +3,11 @@ use std::sync::{
     Arc, Once,
 };
 
-use duroxide::provider_validations::{
-    run_atomicity_tests, run_error_handling_tests, run_instance_locking_tests,
-    run_lock_expiration_tests, run_management_tests, run_multi_execution_tests,
-    run_queue_semantics_tests, ProviderFactory,
+use duroxide::provider_validation::{
+    atomicity, error_handling, instance_locking, lock_expiration, management, multi_execution,
+    queue_semantics,
 };
+use duroxide::provider_validations::ProviderFactory;
 use duroxide::providers::Provider;
 use duroxide_pg::PostgresProvider;
 use sqlx::{postgres::PgPoolOptions, Executor};
@@ -110,44 +110,88 @@ impl ProviderFactory for PostgresProviderFactory {
     }
 }
 
-#[tokio::test]
-async fn test_postgres_provider_atomicity() {
-    let factory = PostgresProviderFactory::new();
-    run_atomicity_tests(&factory).await;
+macro_rules! provider_validation_test {
+    ($module:ident :: $test_fn:ident) => {
+        #[tokio::test]
+        async fn $test_fn() {
+            let factory = PostgresProviderFactory::new();
+            $module::$test_fn(&factory).await;
+        }
+    };
 }
 
-#[tokio::test]
-async fn test_postgres_provider_error_handling() {
-    let factory = PostgresProviderFactory::new();
-    run_error_handling_tests(&factory).await;
+mod atomicity_tests {
+    use super::*;
+
+    provider_validation_test!(atomicity::test_atomicity_failure_rollback);
+    provider_validation_test!(atomicity::test_multi_operation_atomic_ack);
+    provider_validation_test!(atomicity::test_lock_released_only_on_successful_ack);
+    provider_validation_test!(atomicity::test_concurrent_ack_prevention);
 }
 
-#[tokio::test]
-async fn test_postgres_provider_instance_locking() {
-    let factory = PostgresProviderFactory::new();
-    run_instance_locking_tests(&factory).await;
+mod error_handling_tests {
+    use super::*;
+
+    provider_validation_test!(error_handling::test_invalid_lock_token_on_ack);
+    provider_validation_test!(error_handling::test_duplicate_event_id_rejection);
+    provider_validation_test!(error_handling::test_missing_instance_metadata);
+    provider_validation_test!(error_handling::test_corrupted_serialization_data);
+    provider_validation_test!(error_handling::test_lock_expiration_during_ack);
 }
 
-#[tokio::test]
-async fn test_postgres_provider_lock_expiration() {
-    let factory = PostgresProviderFactory::new();
-    run_lock_expiration_tests(&factory).await;
+mod instance_locking_tests {
+    use super::*;
+
+    provider_validation_test!(instance_locking::test_exclusive_instance_lock);
+    provider_validation_test!(instance_locking::test_lock_token_uniqueness);
+    provider_validation_test!(instance_locking::test_invalid_lock_token_rejection);
+    provider_validation_test!(instance_locking::test_concurrent_instance_fetching);
+    provider_validation_test!(instance_locking::test_completions_arriving_during_lock_blocked);
+    provider_validation_test!(instance_locking::test_cross_instance_lock_isolation);
+    provider_validation_test!(instance_locking::test_message_tagging_during_lock);
+    provider_validation_test!(instance_locking::test_ack_only_affects_locked_messages);
+    provider_validation_test!(instance_locking::test_multi_threaded_lock_contention);
+    provider_validation_test!(instance_locking::test_multi_threaded_no_duplicate_processing);
+    provider_validation_test!(instance_locking::test_multi_threaded_lock_expiration_recovery);
 }
 
-#[tokio::test]
-async fn test_postgres_provider_multi_execution() {
-    let factory = PostgresProviderFactory::new();
-    run_multi_execution_tests(&factory).await;
+mod lock_expiration_tests {
+    use super::*;
+
+    provider_validation_test!(lock_expiration::test_lock_expires_after_timeout);
+    provider_validation_test!(lock_expiration::test_abandon_releases_lock_immediately);
+    provider_validation_test!(lock_expiration::test_lock_renewal_on_ack);
+    provider_validation_test!(lock_expiration::test_concurrent_lock_attempts_respect_expiration);
 }
 
-#[tokio::test]
-async fn test_postgres_provider_queue_semantics() {
-    let factory = PostgresProviderFactory::new();
-    run_queue_semantics_tests(&factory).await;
+mod multi_execution_tests {
+    use super::*;
+
+    provider_validation_test!(multi_execution::test_execution_isolation);
+    provider_validation_test!(multi_execution::test_latest_execution_detection);
+    provider_validation_test!(multi_execution::test_execution_id_sequencing);
+    provider_validation_test!(multi_execution::test_continue_as_new_creates_new_execution);
+    provider_validation_test!(multi_execution::test_execution_history_persistence);
 }
 
-#[tokio::test]
-async fn test_postgres_provider_management() {
-    let factory = PostgresProviderFactory::new();
-    run_management_tests(&factory).await;
+mod queue_semantics_tests {
+    use super::*;
+
+    provider_validation_test!(queue_semantics::test_worker_queue_fifo_ordering);
+    provider_validation_test!(queue_semantics::test_worker_peek_lock_semantics);
+    provider_validation_test!(queue_semantics::test_worker_ack_atomicity);
+    provider_validation_test!(queue_semantics::test_timer_delayed_visibility);
+    provider_validation_test!(queue_semantics::test_lost_lock_token_handling);
+}
+
+mod management_tests {
+    use super::*;
+
+    provider_validation_test!(management::test_list_instances);
+    provider_validation_test!(management::test_list_instances_by_status);
+    provider_validation_test!(management::test_list_executions);
+    provider_validation_test!(management::test_get_instance_info);
+    provider_validation_test!(management::test_get_execution_info);
+    provider_validation_test!(management::test_get_system_metrics);
+    provider_validation_test!(management::test_get_queue_depths);
 }

@@ -876,9 +876,8 @@ impl Provider for PostgresProvider {
         let instance_id = match instance_id_row {
             Some((id,)) => id,
             None => {
-                // Lock already released or expired - idempotent, return Ok
                 tx.rollback().await.ok();
-                return Ok(());
+                return Err("Invalid lock token".to_string());
             }
         };
 
