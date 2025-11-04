@@ -1264,39 +1264,40 @@ impl Provider for PostgresProvider {
         let _query_sql;
         let query;
 
-        if let WorkItem::TimerFired { fire_at_ms, .. } = &item {
-            let fire_at = Utc
-                .timestamp_millis_opt(*fire_at_ms as i64)
-                .single()
-                .ok_or_else(|| "Invalid fire_at_ms timestamp".to_string())?;
+        // Determine visible_at: use max of fire_at_ms (for TimerFired) and delay_ms
+        let now_ms = Self::now_millis();
 
-            _query_sql = format!(
-                "INSERT INTO {} (instance_id, work_item, visible_at, created_at) VALUES ($1, $2, $3, NOW())",
-                self.table_name("orchestrator_queue")
-            );
-
-            query = sqlx::query(&_query_sql)
-                .bind(instance_id)
-                .bind(&work_item)
-                .bind(fire_at);
-        } else if let Some(delay_ms) = delay_ms {
-            _query_sql = format!(
-                "INSERT INTO {} (instance_id, work_item, visible_at, created_at) VALUES ($1, $2, NOW() + ($3::bigint) * INTERVAL '1 millisecond', NOW())",
-                self.table_name("orchestrator_queue")
-            );
-
-            query = sqlx::query(&_query_sql)
-                .bind(instance_id)
-                .bind(&work_item)
-                .bind(delay_ms as i64);
+        let visible_at_ms = if let WorkItem::TimerFired { fire_at_ms, .. } = &item {
+            if *fire_at_ms > 0 {
+                // Take max of fire_at_ms and delay_ms (if provided)
+                if let Some(delay_ms) = delay_ms {
+                    std::cmp::max(*fire_at_ms, now_ms as u64 + delay_ms)
+                } else {
+                    *fire_at_ms
+                }
+            } else {
+                // fire_at_ms is 0, use delay_ms or NOW()
+                delay_ms.map(|d| now_ms as u64 + d).unwrap_or(now_ms as u64)
+            }
         } else {
-            _query_sql = format!(
-                "INSERT INTO {} (instance_id, work_item, visible_at, created_at) VALUES ($1, $2, NOW(), NOW())",
-                self.table_name("orchestrator_queue")
-            );
+            // Non-timer item: use delay_ms or NOW()
+            delay_ms.map(|d| now_ms as u64 + d).unwrap_or(now_ms as u64)
+        };
 
-            query = sqlx::query(&_query_sql).bind(instance_id).bind(&work_item);
-        }
+        let visible_at = Utc
+            .timestamp_millis_opt(visible_at_ms as i64)
+            .single()
+            .ok_or_else(|| "Invalid visible_at timestamp".to_string())?;
+
+        _query_sql = format!(
+            "INSERT INTO {} (instance_id, work_item, visible_at, created_at) VALUES ($1, $2, $3, NOW())",
+            self.table_name("orchestrator_queue")
+        );
+
+        query = sqlx::query(&_query_sql)
+            .bind(instance_id)
+            .bind(&work_item)
+            .bind(visible_at);
 
         query.execute(&*self.pool).await.map_err(|e| {
             error!(
