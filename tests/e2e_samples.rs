@@ -7,7 +7,24 @@ use duroxide::runtime::{self};
 use duroxide::{ActivityContext, Client, OrchestrationContext, OrchestrationRegistry};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::sync::Once;
+use tracing_subscriber::EnvFilter;
+
 mod common;
+
+static INIT_LOGGING: Once = Once::new();
+
+fn init_test_logging() {
+    INIT_LOGGING.call_once(|| {
+        let env_filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_max_level(tracing::Level::INFO)
+            .with_test_writer()
+            .init();
+    });
+}
 
 /// Hello World: define one activity and call it from an orchestrator.
 ///
@@ -17,6 +34,7 @@ mod common;
 /// - Schedule an activity and await its typed completion
 #[tokio::test]
 async fn sample_hello_world_fs() {
+    init_test_logging();
     let store = common::create_postgres_store().await;
 
     // Register a simple activity: "Hello" -> format a greeting
@@ -1293,7 +1311,7 @@ async fn sample_cancellation_parent_cascades_to_children_fs() {
         .unwrap();
 
     // Allow scheduling turn to run and child to start
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Cancel the parent; the runtime will append OrchestrationCancelRequested and then OrchestrationFailed
     let _ = client.cancel_instance("inst-sample-cancel", "user_request").await;

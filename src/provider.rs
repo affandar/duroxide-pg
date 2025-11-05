@@ -128,6 +128,21 @@ impl PostgresProvider {
         .execute(&*self.pool)
         .await?;
 
+        // Backfill columns for existing deployments that created the table before instance_id/visible_at existed
+        sqlx::query(&format!(
+            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS instance_id TEXT",
+            self.table_name("orchestrator_queue")
+        ))
+        .execute(&*self.pool)
+        .await?;
+
+        sqlx::query(&format!(
+            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS visible_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP",
+            self.table_name("orchestrator_queue")
+        ))
+        .execute(&*self.pool)
+        .await?;
+
         sqlx::query(&format!(
             r#"
             CREATE TABLE IF NOT EXISTS {} (
@@ -1065,10 +1080,13 @@ impl Provider for PostgresProvider {
     #[instrument(skip(self), target = "duroxide::providers::postgres")]
     async fn dequeue_worker_peek_lock(&self) -> Option<(WorkItem, String)> {
         let start = std::time::Instant::now();
-        // Use SELECT FOR UPDATE SKIP LOCKED for atomic lock acquisition
+
+        // Hold the SELECT FOR UPDATE lock until we update the row with our lock token.
+        let mut tx = self.pool.begin().await.ok()?;
+
         let row: Option<(i64, String)> = sqlx::query_as(&format!(
             r#"
-            SELECT id, work_item 
+            SELECT id, work_item
             FROM {}
             WHERE lock_token IS NULL OR locked_until <= $1
             ORDER BY id
@@ -1078,14 +1096,26 @@ impl Provider for PostgresProvider {
             self.table_name("worker_queue")
         ))
         .bind(Self::now_millis())
-        .fetch_optional(&*self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .ok()?;
 
-        let (id, work_item_json) = row?;
+        let (id, work_item_json) = match row {
+            Some(row) => row,
+            None => {
+                tx.rollback().await.ok();
+                return None;
+            }
+        };
 
         // Deserialize the work item
-        let work_item: WorkItem = serde_json::from_str(&work_item_json).ok()?;
+        let work_item: WorkItem = match serde_json::from_str(&work_item_json) {
+            Ok(item) => item,
+            Err(_) => {
+                tx.rollback().await.ok();
+                return None;
+            }
+        };
 
         // Generate lock token and calculate expiration
         let lock_token = Self::generate_lock_token();
@@ -1100,14 +1130,17 @@ impl Provider for PostgresProvider {
         .bind(&lock_token)
         .bind(locked_until)
         .bind(id)
-        .execute(&*self.pool)
+        .execute(&mut *tx)
         .await
         .ok()?
         .rows_affected();
 
         if rows_affected == 0 {
+            tx.rollback().await.ok();
             return None; // Row was already locked by another process
         }
+
+        tx.commit().await.ok()?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
         debug!(

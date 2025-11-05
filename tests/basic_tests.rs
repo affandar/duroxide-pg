@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 // Counter for unique test schemas
 static TEST_SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-// Initialize tracing subscriber for tests with INFO level
+// Initialize tracing subscriber for tests with DEBUG level
 static INIT: std::sync::Once = std::sync::Once::new();
 
 fn init_test_logging() {
