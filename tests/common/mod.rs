@@ -1,6 +1,7 @@
 use duroxide::Event;
 use duroxide::providers::{ExecutionMetadata, Provider, WorkItem};
 use duroxide_pg::PostgresProvider;
+use sqlx::postgres::PgPoolOptions;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc as StdArc;
 use std::time::{Duration, Instant};
@@ -70,7 +71,7 @@ where
     }
 }
 
-pub async fn create_postgres_store() -> StdArc<dyn Provider> {
+pub async fn create_postgres_store() -> (StdArc<dyn Provider>, String) {
     let database_url = get_database_url();
     let schema_name = next_schema_name();
     
@@ -82,7 +83,22 @@ pub async fn create_postgres_store() -> StdArc<dyn Provider> {
     .await
     .expect("Failed to create Postgres provider for e2e tests");
     
-    StdArc::new(provider) as StdArc<dyn Provider>
+    (StdArc::new(provider) as StdArc<dyn Provider>, schema_name)
+}
+
+/// Clean up a test schema by dropping it
+pub async fn cleanup_schema(schema_name: &str) {
+    let database_url = get_database_url();
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .expect("Failed to connect to database for schema cleanup");
+    
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS {} CASCADE", schema_name))
+        .execute(&pool)
+        .await
+        .expect("Failed to drop test schema");
 }
 
 /// Test helper to create a new orchestration instance with initial history.

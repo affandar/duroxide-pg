@@ -72,6 +72,7 @@ async fn reset_schema(database_url: &str, schema_name: &str) {
 pub struct PostgresProviderFactory {
     database_url: String,
     lock_timeout_ms: u64,
+    current_schema_name: std::sync::Mutex<Option<String>>,
 }
 
 impl PostgresProviderFactory {
@@ -80,12 +81,16 @@ impl PostgresProviderFactory {
         Self {
             database_url: get_database_url(),
             lock_timeout_ms: 5_000,
+            current_schema_name: std::sync::Mutex::new(None),
         }
     }
 
     async fn create_postgres_provider(&self) -> Arc<PostgresProvider> {
         let schema_name = next_schema_name();
         reset_schema(&self.database_url, &schema_name).await;
+
+        // Store schema name for cleanup
+        *self.current_schema_name.lock().unwrap() = Some(schema_name.clone());
 
         let provider = PostgresProvider::new_with_schema_and_timeout(
             &self.database_url,
@@ -96,6 +101,12 @@ impl PostgresProviderFactory {
         .expect("Failed to create Postgres provider for validation tests");
 
         Arc::new(provider)
+    }
+
+    async fn cleanup_schema(&self) {
+        if let Some(schema_name) = self.current_schema_name.lock().unwrap().take() {
+            reset_schema(&self.database_url, &schema_name).await;
+        }
     }
 }
 
@@ -116,6 +127,7 @@ macro_rules! provider_validation_test {
         async fn $test_fn() {
             let factory = PostgresProviderFactory::new();
             $module::$test_fn(&factory).await;
+            factory.cleanup_schema().await;
         }
     };
 }

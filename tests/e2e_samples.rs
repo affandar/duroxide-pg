@@ -35,7 +35,7 @@ fn init_test_logging() {
 #[tokio::test]
 async fn sample_hello_world_fs() {
     init_test_logging();
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     // Register a simple activity: "Hello" -> format a greeting
     let activity_registry = ActivityRegistry::builder()
@@ -81,6 +81,7 @@ async fn sample_hello_world_fs() {
         _ => panic!("unexpected orchestration status"),
     }
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Basic control flow: branch on a flag returned by an activity.
@@ -90,7 +91,7 @@ async fn sample_hello_world_fs() {
 /// - Use standard Rust control flow to drive subsequent activities
 #[tokio::test]
 async fn sample_basic_control_flow_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     // Register activities that return a flag and branch outcomes
     let activity_registry = ActivityRegistry::builder()
@@ -140,6 +141,7 @@ async fn sample_basic_control_flow_fs() {
         _ => panic!("unexpected orchestration status"),
     }
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Loops and accumulation: call an activity repeatedly and build up a value.
@@ -149,7 +151,7 @@ async fn sample_basic_control_flow_fs() {
 /// - Emit replay-safe traces per iteration
 #[tokio::test]
 async fn sample_loop_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     // Register an activity that appends "x" to its input
     let activity_registry = ActivityRegistry::builder()
@@ -192,6 +194,7 @@ async fn sample_loop_fs() {
         _ => panic!("unexpected orchestration status"),
     }
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Error handling and compensation: recover from a failed activity.
@@ -201,7 +204,7 @@ async fn sample_loop_fs() {
 /// - On failure, run a compensating activity and log what happened
 #[tokio::test]
 async fn sample_error_handling_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     // Register a fragile activity that may fail, and a recovery activity
     let activity_registry = ActivityRegistry::builder()
@@ -259,6 +262,7 @@ async fn sample_error_handling_fs() {
         _ => panic!("unexpected orchestration status"),
     }
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Timeouts via racing a long-running activity against a timer.
@@ -269,7 +273,7 @@ async fn sample_error_handling_fs() {
 /// - If the timer wins, return an error to the user
 #[tokio::test]
 async fn sample_timeout_with_timer_race_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     // Register a long-running activity that sleeps before returning
     let activity_registry = ActivityRegistry::builder()
@@ -316,6 +320,7 @@ async fn sample_timeout_with_timer_race_fs() {
         _ => panic!("unexpected orchestration status"),
     }
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Mixed race with select2: activity vs external event, demonstrate using the winner index.
@@ -326,7 +331,7 @@ async fn sample_timeout_with_timer_race_fs() {
 /// - Use the usize index from select2 to branch on which completed first
 #[tokio::test]
 async fn sample_select2_activity_vs_external_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder()
         .register("Sleep", |ctx: ActivityContext, _input: String| async move {
@@ -384,6 +389,7 @@ async fn sample_select2_activity_vs_external_fs() {
     // External event should win (idx==1) because activity sleeps 300ms
     assert_eq!(s, "event:ok");
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Parallel fan-out/fan-in: run two activities concurrently and join results.
@@ -393,7 +399,7 @@ async fn sample_select2_activity_vs_external_fs() {
 /// - Deterministic replay ensures join order follows history
 #[tokio::test]
 async fn dtf_legacy_gabbar_greetings_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     // Register a greeting activity used by both branches
     let activity_registry = ActivityRegistry::builder()
@@ -448,6 +454,7 @@ async fn dtf_legacy_gabbar_greetings_fs() {
         _ => panic!("unexpected orchestration status"),
     }
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// System activities: use built-in activities to get wall-clock time and a new GUID.
@@ -457,7 +464,7 @@ async fn dtf_legacy_gabbar_greetings_fs() {
 /// - Log and validate basic formatting of results
 #[tokio::test]
 async fn sample_system_activities_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder().build();
 
@@ -504,13 +511,14 @@ async fn sample_system_activities_fs() {
     assert!(guid_str.chars().filter(|c| *c != '-').all(|c| c.is_ascii_hexdigit()));
 
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Sample: start an orchestration and poll its status until completion.
 #[tokio::test]
 async fn sample_status_polling_fs() {
     use duroxide::OrchestrationStatus;
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder().build();
     let orchestration = |ctx: OrchestrationContext, _input: String| async move {
@@ -540,6 +548,7 @@ async fn sample_status_polling_fs() {
         _ => unreachable!(),
     }
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Sub-orchestrations: simple parent/child orchestration.
@@ -549,7 +558,7 @@ async fn sample_status_polling_fs() {
 /// - Child uses an activity and returns its output
 #[tokio::test]
 async fn sample_sub_orchestration_basic_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder()
         .register("Upper", |ctx: ActivityContext, input: String| async move {
@@ -598,6 +607,7 @@ async fn sample_sub_orchestration_basic_fs() {
         _ => panic!("unexpected orchestration status"),
     }
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Sub-orchestrations: fan-out to multiple children and join.
@@ -607,7 +617,7 @@ async fn sample_sub_orchestration_basic_fs() {
 /// - Uses `ctx.join` to await both in history order and aggregates results
 #[tokio::test]
 async fn sample_sub_orchestration_fanout_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder()
         .register("Add", |_ctx: ActivityContext, input: String| async move {
@@ -663,6 +673,7 @@ async fn sample_sub_orchestration_fanout_fs() {
         _ => panic!("unexpected orchestration status"),
     }
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Sub-orchestrations: chained (root -> mid -> leaf).
@@ -672,7 +683,7 @@ async fn sample_sub_orchestration_fanout_fs() {
 /// - Demonstrates nested sub-orchestrations
 #[tokio::test]
 async fn sample_sub_orchestration_chained_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder()
         .register("AppendX", |_ctx: ActivityContext, input: String| async move {
@@ -723,6 +734,7 @@ async fn sample_sub_orchestration_chained_fs() {
         _ => panic!("unexpected orchestration status"),
     }
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Detached orchestration scheduling: start independent orchestrations without awaiting.
@@ -734,7 +746,7 @@ async fn sample_sub_orchestration_chained_fs() {
 #[tokio::test]
 async fn sample_detached_orchestration_scheduling_fs() {
     use duroxide::OrchestrationStatus;
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder()
         .register("Echo", |_ctx: ActivityContext, input: String| async move { Ok(input) })
@@ -794,6 +806,7 @@ async fn sample_detached_orchestration_scheduling_fs() {
     }
 
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// ContinueAsNew sample: roll over input across executions until a condition is met.
@@ -803,7 +816,7 @@ async fn sample_detached_orchestration_scheduling_fs() {
 /// - Provider keeps all execution histories; latest execution holds the final result
 #[tokio::test]
 async fn sample_continue_as_new_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder().build();
     let orch = |ctx: OrchestrationContext, input: String| async move {
@@ -841,6 +854,7 @@ async fn sample_continue_as_new_fs() {
     let execs = store.list_executions("inst-sample-can").await;
     assert_eq!(execs, vec![1, 2, 3, 4]);
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 // Typed samples
@@ -862,7 +876,7 @@ struct Ack {
 /// Typed activity + typed orchestration: Add two numbers and return a struct
 #[tokio::test]
 async fn sample_typed_activity_and_orchestration_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder()
         .register_typed::<AddReq, AddRes, _, _>("Add", |_ctx: ActivityContext, req| async move {
@@ -898,12 +912,13 @@ async fn sample_typed_activity_and_orchestration_fs() {
         Err(error) => panic!("orchestration failed: {error}"),
     }
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Typed external event sample: await Ack { ok } from an event
 #[tokio::test]
 async fn sample_typed_event_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder().build();
     let orch = |ctx: OrchestrationContext, _in: ()| async move {
@@ -940,12 +955,13 @@ async fn sample_typed_event_fs() {
         Err(error) => panic!("orchestration failed: {error}"),
     }
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Mixed string and typed activities with typed orchestration, showcasing select on typed+string
 #[tokio::test]
 async fn sample_mixed_string_and_typed_typed_orch_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     // String activity: returns uppercased string
     // Typed activity: Add two numbers
@@ -1001,12 +1017,13 @@ async fn sample_mixed_string_and_typed_typed_orch_fs() {
     };
     assert!(s == "sum=3" || s == "up=HELLO");
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Mixed string and typed activities with string orchestration, showcasing select on typed+string
 #[tokio::test]
 async fn sample_mixed_string_and_typed_string_orch_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder()
         .register("Upper", |_ctx: ActivityContext, input: String| async move {
@@ -1059,6 +1076,7 @@ async fn sample_mixed_string_and_typed_string_orch_fs() {
     };
     assert!(s == "sum=12" || s == "up=RACE");
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Versioning: default latest vs pinned exact on start
@@ -1069,7 +1087,7 @@ async fn sample_mixed_string_and_typed_string_orch_fs() {
 /// - Changing policy to Exact pins new starts to a specific version
 #[tokio::test]
 async fn sample_versioning_start_latest_vs_exact_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     // Two versions: return a string indicating which version executed
     let v1 = |_: OrchestrationContext, _in: String| async move { Ok("v1".to_string()) };
@@ -1127,6 +1145,7 @@ async fn sample_versioning_start_latest_vs_exact_fs() {
     }
 
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Versioning: sub-orchestration explicit version vs default policy
@@ -1136,7 +1155,7 @@ async fn sample_versioning_start_latest_vs_exact_fs() {
 /// - The explicit call uses 1.0.0; the policy (Latest) uses 2.0.0
 #[tokio::test]
 async fn sample_versioning_sub_orchestration_explicit_vs_policy_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     let child_v1 = |_: OrchestrationContext, _in: String| async move { Ok("c1".to_string()) };
     let child_v2 = |_: OrchestrationContext, _in: String| async move { Ok("c2".to_string()) };
@@ -1182,6 +1201,7 @@ async fn sample_versioning_sub_orchestration_explicit_vs_policy_fs() {
     }
 
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Versioning + ContinueAsNew: safe upgrade of a long-running (infinite) orchestration
@@ -1194,7 +1214,7 @@ async fn sample_versioning_sub_orchestration_explicit_vs_policy_fs() {
 #[tokio::test]
 async fn sample_versioning_continue_as_new_upgrade_fs() {
     use duroxide::OrchestrationStatus;
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     // v1: simulate deciding to upgrade at a maintenance boundary (e.g., at the end of a cycle)
     // In a real infinite loop, you'd do some work (timer/activity), then CAN to v2.
@@ -1255,6 +1275,7 @@ async fn sample_versioning_continue_as_new_upgrade_fs() {
     );
 
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Cancellation: cancel a parent orchestration and observe cascading cancellation to children.
@@ -1267,7 +1288,7 @@ async fn sample_versioning_continue_as_new_upgrade_fs() {
 #[tokio::test]
 async fn sample_cancellation_parent_cascades_to_children_fs() {
     use duroxide::Event;
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     // Child: waits forever (until canceled). This demonstrates cooperative cancellation via runtime.
     let child = |ctx: OrchestrationContext, _input: String| async move {
@@ -1374,6 +1395,7 @@ async fn sample_cancellation_parent_cascades_to_children_fs() {
     }
 
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Error handling: basic activity failure
@@ -1384,7 +1406,7 @@ async fn sample_cancellation_parent_cascades_to_children_fs() {
 /// - Simple error handling pattern
 #[tokio::test]
 async fn sample_basic_error_handling_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     // Register an activity that can fail
     let activity_registry = ActivityRegistry::builder()
@@ -1452,6 +1474,7 @@ async fn sample_basic_error_handling_fs() {
     }
 
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Error handling: nested function with `?` operator
@@ -1462,7 +1485,7 @@ async fn sample_basic_error_handling_fs() {
 /// - Clean error handling pattern
 #[tokio::test]
 async fn sample_nested_function_error_handling_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     // Register activities
     let activity_registry = ActivityRegistry::builder()
@@ -1545,6 +1568,7 @@ async fn sample_nested_function_error_handling_fs() {
     }
 
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
 
 /// Error handling: error recovery with logging
@@ -1555,7 +1579,7 @@ async fn sample_nested_function_error_handling_fs() {
 /// - Graceful failure handling
 #[tokio::test]
 async fn sample_error_recovery_fs() {
-    let store = common::create_postgres_store().await;
+    let (store, schema_name) = common::create_postgres_store().await;
 
     // Register activities
     let activity_registry = ActivityRegistry::builder()
@@ -1641,4 +1665,5 @@ async fn sample_error_recovery_fs() {
     }
 
     rt.shutdown(None).await;
+    common::cleanup_schema(&schema_name).await;
 }
