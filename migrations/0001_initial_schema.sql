@@ -1,5 +1,6 @@
--- Initial schema for Duroxide PostgreSQL provider
--- Converted from SQLite schema with PostgreSQL-specific types
+-- Migration: 0001_initial_schema.sql
+-- Description: Creates initial schema for Duroxide PostgreSQL provider
+-- This migration will be executed with schema-qualified names via the migration runner
 
 -- Instance metadata
 CREATE TABLE IF NOT EXISTS instances (
@@ -44,10 +45,9 @@ CREATE TABLE IF NOT EXISTS orchestrator_queue (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
--- Indexes for orchestrator queue
-CREATE INDEX IF NOT EXISTS idx_orch_visible ON orchestrator_queue(visible_at, lock_token);
-CREATE INDEX IF NOT EXISTS idx_orch_instance ON orchestrator_queue(instance_id);
-CREATE INDEX IF NOT EXISTS idx_orch_lock ON orchestrator_queue(lock_token);
+-- Backfill columns for existing deployments that created the table before instance_id/visible_at existed
+ALTER TABLE orchestrator_queue ADD COLUMN IF NOT EXISTS instance_id TEXT;
+ALTER TABLE orchestrator_queue ADD COLUMN IF NOT EXISTS visible_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;
 
 -- Worker queue
 CREATE TABLE IF NOT EXISTS worker_queue (
@@ -58,9 +58,6 @@ CREATE TABLE IF NOT EXISTS worker_queue (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
--- Indexes for worker queue
-CREATE INDEX IF NOT EXISTS idx_worker_available ON worker_queue(lock_token, id);
-
 -- Instance-level locks for concurrent dispatcher coordination
 CREATE TABLE IF NOT EXISTS instance_locks (
     instance_id TEXT PRIMARY KEY,
@@ -69,9 +66,17 @@ CREATE TABLE IF NOT EXISTS instance_locks (
     locked_at BIGINT NOT NULL -- Unix timestamp in milliseconds
 );
 
--- Index for instance_locks (helps with lock expiration queries)
+-- Create indexes
+CREATE INDEX IF NOT EXISTS idx_orch_visible ON orchestrator_queue(visible_at, lock_token);
+CREATE INDEX IF NOT EXISTS idx_orch_instance ON orchestrator_queue(instance_id);
+CREATE INDEX IF NOT EXISTS idx_orch_lock ON orchestrator_queue(lock_token);
+CREATE INDEX IF NOT EXISTS idx_worker_available ON worker_queue(lock_token, id);
 CREATE INDEX IF NOT EXISTS idx_instance_locks_locked_until ON instance_locks(locked_until);
-
--- Index for history lookups
 CREATE INDEX IF NOT EXISTS idx_history_lookup ON history(instance_id, execution_id, event_id);
 
+-- Migration tracking table (create in each schema)
+CREATE TABLE IF NOT EXISTS _duroxide_migrations (
+    version BIGINT PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);

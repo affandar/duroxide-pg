@@ -8,8 +8,11 @@ use duroxide::Event;
 use sqlx::{postgres::PgPoolOptions, Error as SqlxError, PgPool};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::time::{sleep, Duration};
 use tracing::{debug, error, instrument};
 use uuid::Uuid;
+
+use crate::migrations::MigrationRunner;
 
 pub struct PostgresProvider {
     pool: Arc<PgPool>,
@@ -44,177 +47,19 @@ impl PostgresProvider {
             schema_name: schema_name.clone(),
         };
 
-        // Create schema if it doesn't exist (unless using default "public")
-        if schema_name != "public" {
-            sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS {}", schema_name))
-                .execute(&*provider.pool)
-                .await?;
-        }
-
-        // Initialize schema (create tables)
-        provider.initialize_schema().await?;
+        // Run migrations to initialize schema
+        let migration_runner = MigrationRunner::new(provider.pool.clone(), schema_name.clone());
+        migration_runner.migrate().await?;
 
         Ok(provider)
     }
 
     #[instrument(skip(self), target = "duroxide::providers::postgres")]
     pub async fn initialize_schema(&self) -> Result<()> {
-        // Create tables using schema-qualified names
-
-        sqlx::query(&format!(
-            r#"
-            CREATE TABLE IF NOT EXISTS {} (
-                instance_id TEXT PRIMARY KEY,
-                orchestration_name TEXT NOT NULL,
-                orchestration_version TEXT NOT NULL,
-                current_execution_id BIGINT NOT NULL DEFAULT 1,
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-            self.table_name("instances")
-        ))
-        .execute(&*self.pool)
-        .await?;
-
-        sqlx::query(&format!(
-            r#"
-            CREATE TABLE IF NOT EXISTS {} (
-                instance_id TEXT NOT NULL,
-                execution_id BIGINT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'Running',
-                output TEXT,
-                started_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                completed_at TIMESTAMPTZ,
-                PRIMARY KEY (instance_id, execution_id)
-            )
-            "#,
-            self.table_name("executions")
-        ))
-        .execute(&*self.pool)
-        .await?;
-
-        sqlx::query(&format!(
-            r#"
-            CREATE TABLE IF NOT EXISTS {} (
-                instance_id TEXT NOT NULL,
-                execution_id BIGINT NOT NULL,
-                event_id BIGINT NOT NULL,
-                event_type TEXT NOT NULL,
-                event_data TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (instance_id, execution_id, event_id)
-            )
-            "#,
-            self.table_name("history")
-        ))
-        .execute(&*self.pool)
-        .await?;
-
-        sqlx::query(&format!(
-            r#"
-            CREATE TABLE IF NOT EXISTS {} (
-                id BIGSERIAL PRIMARY KEY,
-                instance_id TEXT NOT NULL,
-                work_item TEXT NOT NULL,
-                visible_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                lock_token TEXT,
-                locked_until BIGINT,
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-            self.table_name("orchestrator_queue")
-        ))
-        .execute(&*self.pool)
-        .await?;
-
-        // Backfill columns for existing deployments that created the table before instance_id/visible_at existed
-        sqlx::query(&format!(
-            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS instance_id TEXT",
-            self.table_name("orchestrator_queue")
-        ))
-        .execute(&*self.pool)
-        .await?;
-
-        sqlx::query(&format!(
-            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS visible_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP",
-            self.table_name("orchestrator_queue")
-        ))
-        .execute(&*self.pool)
-        .await?;
-
-        sqlx::query(&format!(
-            r#"
-            CREATE TABLE IF NOT EXISTS {} (
-                id BIGSERIAL PRIMARY KEY,
-                work_item TEXT NOT NULL,
-                lock_token TEXT,
-                locked_until BIGINT,
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-            self.table_name("worker_queue")
-        ))
-        .execute(&*self.pool)
-        .await?;
-
-        sqlx::query(&format!(
-            r#"
-            CREATE TABLE IF NOT EXISTS {} (
-                instance_id TEXT PRIMARY KEY,
-                lock_token TEXT NOT NULL,
-                locked_until BIGINT NOT NULL,
-                locked_at BIGINT NOT NULL
-            )
-            "#,
-            self.table_name("instance_locks")
-        ))
-        .execute(&*self.pool)
-        .await?;
-
-        // Create indexes
-        sqlx::query(&format!(
-            "CREATE INDEX IF NOT EXISTS idx_orch_visible ON {}(visible_at, lock_token)",
-            self.table_name("orchestrator_queue")
-        ))
-        .execute(&*self.pool)
-        .await?;
-
-        sqlx::query(&format!(
-            "CREATE INDEX IF NOT EXISTS idx_orch_instance ON {}(instance_id)",
-            self.table_name("orchestrator_queue")
-        ))
-        .execute(&*self.pool)
-        .await?;
-
-        sqlx::query(&format!(
-            "CREATE INDEX IF NOT EXISTS idx_orch_lock ON {}(lock_token)",
-            self.table_name("orchestrator_queue")
-        ))
-        .execute(&*self.pool)
-        .await?;
-
-        sqlx::query(&format!(
-            "CREATE INDEX IF NOT EXISTS idx_worker_available ON {}(lock_token, id)",
-            self.table_name("worker_queue")
-        ))
-        .execute(&*self.pool)
-        .await?;
-
-        sqlx::query(&format!(
-            "CREATE INDEX IF NOT EXISTS idx_instance_locks_locked_until ON {}(locked_until)",
-            self.table_name("instance_locks")
-        ))
-        .execute(&*self.pool)
-        .await?;
-
-        sqlx::query(&format!(
-            "CREATE INDEX IF NOT EXISTS idx_history_lookup ON {}(instance_id, execution_id, event_id)",
-            self.table_name("history")
-        ))
-        .execute(&*self.pool)
-        .await?;
-
+        // Schema initialization is now handled by migrations
+        // This method is kept for backward compatibility but delegates to migrations
+        let migration_runner = MigrationRunner::new(self.pool.clone(), self.schema_name.clone());
+        migration_runner.migrate().await?;
         Ok(())
     }
 
@@ -258,6 +103,7 @@ impl PostgresProvider {
             "orchestrator_queue",
             "worker_queue",
             "instance_locks",
+            "_duroxide_migrations", // Migration tracking table
         ];
 
         for table in tables {
@@ -292,252 +138,354 @@ impl Provider for PostgresProvider {
     #[instrument(skip(self), target = "duroxide::providers::postgres")]
     async fn fetch_orchestration_item(&self) -> Option<OrchestrationItem> {
         let start = std::time::Instant::now();
-        let mut tx = match self.pool.begin().await {
-            Ok(tx) => tx,
-            Err(e) => {
-                error!(
-                    target = "duroxide::providers::postgres",
-                    operation = "fetch_orchestration_item",
-                    error_type = "transaction_failed",
-                    error = %e,
-                    "Failed to start transaction"
-                );
-                return None;
-            }
-        };
         let now_ms = Self::now_millis();
 
-        // Step 1: Find an instance that has visible messages AND is not locked (or lock expired)
-        // Use SELECT FOR UPDATE SKIP LOCKED for atomic lock acquisition
-        let instance_id_row: Option<(String,)> = sqlx::query_as(&format!(
-            r#"
-            SELECT q.instance_id
-            FROM {} q
-            WHERE q.visible_at <= NOW()
-              AND NOT EXISTS (
-                SELECT 1
-                FROM {} il
-                WHERE il.instance_id = q.instance_id
-                  AND il.locked_until > $1
-              )
-            ORDER BY q.visible_at, q.id
-            LIMIT 1
-            FOR UPDATE SKIP LOCKED
-            "#,
-            self.table_name("orchestrator_queue"),
-            self.table_name("instance_locks")
-        ))
-        .bind(now_ms)
-        .fetch_optional(&mut *tx)
-        .await
-        .ok()?;
+        // Retry loop: try to acquire instance lock up to 3 times
+        const MAX_RETRIES: u32 = 3;
+        const RETRY_DELAY_MS: u64 = 10;
 
-        let instance_id = match instance_id_row {
-            Some((id,)) => id,
-            None => {
-                debug!(
-                    target = "duroxide::providers::postgres",
-                    operation = "fetch_orchestration_item",
-                    now_ms = now_ms,
-                    "No available instances"
-                );
-                tx.rollback().await.ok();
-                return None;
-            }
-        };
+        for attempt in 0..=MAX_RETRIES {
+            let mut tx = match self.pool.begin().await {
+                Ok(tx) => tx,
+                Err(e) => {
+                    if attempt < MAX_RETRIES {
+                        debug!(
+                            target = "duroxide::providers::postgres",
+                            operation = "fetch_orchestration_item",
+                            error_type = "transaction_failed",
+                            error = %e,
+                            attempt = attempt + 1,
+                            "Failed to start transaction, retrying"
+                        );
+                    } else {
+                        tracing::warn!(
+                            target = "duroxide::providers::postgres",
+                            operation = "fetch_orchestration_item",
+                            error_type = "transaction_failed",
+                            error = %e,
+                            attempt = attempt + 1,
+                            max_retries = MAX_RETRIES,
+                            "Failed to start transaction after all retries exhausted"
+                        );
+                    }
+                    if attempt < MAX_RETRIES {
+                        sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+                        continue;
+                    }
+                    return None;
+                }
+            };
 
-        debug!(
-            target = "duroxide::providers::postgres",
-            operation = "fetch_orchestration_item",
-            instance_id = %instance_id,
-            "Selected available instance"
-        );
-
-        // Step 2: Atomically acquire instance lock
-        let lock_token = Self::generate_lock_token();
-        let locked_until = now_ms + self.lock_timeout_ms as i64;
-
-        let lock_result = sqlx::query(&format!(
-            r#"
-            INSERT INTO {} (instance_id, lock_token, locked_until, locked_at)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT(instance_id) DO UPDATE
-            SET lock_token = $2, locked_until = $3, locked_at = $4
-            WHERE {}.locked_until <= $4
-            "#,
-            self.table_name("instance_locks"),
-            self.table_name("instance_locks")
-        ))
-        .bind(&instance_id)
-        .bind(&lock_token)
-        .bind(locked_until)
-        .bind(now_ms)
-        .execute(&mut *tx)
-        .await
-        .ok()?;
-
-        if lock_result.rows_affected() == 0 {
-            debug!(
-                target = "duroxide::providers::postgres",
-                operation = "fetch_orchestration_item",
-                instance_id = %instance_id,
-                now_ms = now_ms,
-                locked_until = locked_until,
-                "Failed to acquire instance lock (already locked)"
-            );
-            tx.rollback().await.ok();
-            return None;
-        }
-
-        // Step 3: Lock ALL visible messages for this instance
-        sqlx::query(&format!(
-            r#"
-            UPDATE {}
-            SET lock_token = $1, locked_until = $2
-            WHERE instance_id = $3 AND visible_at <= NOW()
-              AND (lock_token IS NULL OR locked_until <= $4)
-            "#,
-            self.table_name("orchestrator_queue")
-        ))
-        .bind(&lock_token)
-        .bind(locked_until)
-        .bind(&instance_id)
-        .bind(now_ms)
-        .execute(&mut *tx)
-        .await
-        .ok()?;
-
-        // Step 4: Fetch all locked messages
-        let message_rows: Vec<(i64, String)> = sqlx::query_as(&format!(
-            r#"
-            SELECT id, work_item
-            FROM {}
-            WHERE lock_token = $1
-            ORDER BY id
-            "#,
-            self.table_name("orchestrator_queue")
-        ))
-        .bind(&lock_token)
-        .fetch_all(&mut *tx)
-        .await
-        .ok()?;
-
-        if message_rows.is_empty() {
-            // No messages for instance (shouldn't happen), release lock and rollback
-            error!(
-                target = "duroxide::providers::postgres",
-                operation = "fetch_orchestration_item",
-                instance_id = %instance_id,
-                now_ms = now_ms,
-                lock_token = %lock_token,
-                locked_until = locked_until,
-                "No messages found for locked instance"
-            );
-            sqlx::query(&format!(
-                "DELETE FROM {} WHERE instance_id = $1",
+            // Step 1: Find an instance that has visible messages AND is not locked (or lock expired)
+            // Use SELECT FOR UPDATE SKIP LOCKED for atomic lock acquisition
+            let instance_id_row: Option<(String,)> = match sqlx::query_as(&format!(
+                r#"
+                SELECT q.instance_id
+                FROM {} q
+                WHERE q.visible_at <= NOW()
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM {} il
+                    WHERE il.instance_id = q.instance_id
+                      AND il.locked_until > $1
+                  )
+                ORDER BY q.visible_at, q.id
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+                "#,
+                self.table_name("orchestrator_queue"),
                 self.table_name("instance_locks")
             ))
-            .bind(&instance_id)
-            .execute(&mut *tx)
+            .bind(now_ms)
+            .fetch_optional(&mut *tx)
             .await
-            .ok();
-            tx.rollback().await.ok();
-            return None;
-        }
+            {
+                Ok(row) => row,
+                Err(e) => {
+                    if attempt < MAX_RETRIES {
+                        debug!(
+                            target = "duroxide::providers::postgres",
+                            operation = "fetch_orchestration_item",
+                            error_type = "query_failed",
+                            error = %e,
+                            attempt = attempt + 1,
+                            "Failed to query for available instances, retrying"
+                        );
+                    } else {
+                        tracing::warn!(
+                            target = "duroxide::providers::postgres",
+                            operation = "fetch_orchestration_item",
+                            error_type = "query_failed",
+                            error = %e,
+                            attempt = attempt + 1,
+                            max_retries = MAX_RETRIES,
+                            "Failed to query for available instances after all retries exhausted"
+                        );
+                    }
+                    tx.rollback().await.ok();
+                    if attempt < MAX_RETRIES {
+                        sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+                        continue;
+                    }
+                    return None;
+                }
+            };
 
-        // Deserialize work items
-        let messages: Vec<WorkItem> = message_rows
-            .into_iter()
-            .filter_map(|(_, work_item_json)| {
-                serde_json::from_str::<WorkItem>(&work_item_json).ok()
-            })
-            .collect();
-
-        debug!(
-            target = "duroxide::providers::postgres",
-            operation = "fetch_orchestration_item",
-            instance_id = %instance_id,
-            message_count = messages.len(),
-            "Fetched and marked messages for locked instance"
-        );
-
-        // Step 5: Load instance metadata
-        let instance_info: Option<(String, String, i64)> = sqlx::query_as(&format!(
-            r#"
-            SELECT orchestration_name, orchestration_version, current_execution_id
-            FROM {}
-            WHERE instance_id = $1
-            "#,
-            self.table_name("instances")
-        ))
-        .bind(&instance_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .ok()?;
-
-        let (orchestration_name, orchestration_version, current_execution_id, history) =
-            if let Some((name, version, exec_id)) = instance_info {
-                // Instance exists - get history for current execution
-                let history_rows: Vec<String> = sqlx::query_scalar(&format!(
-                    "SELECT event_data FROM {} WHERE instance_id = $1 AND execution_id = $2 ORDER BY event_id",
-                    self.table_name("history")
-                ))
-                .bind(&instance_id)
-                .bind(exec_id)
-                .fetch_all(&mut *tx)
-                .await
-                .ok()
-                .unwrap_or_default();
-
-                let history: Vec<Event> = history_rows
-                    .into_iter()
-                    .filter_map(|event_data| serde_json::from_str::<Event>(&event_data).ok())
-                    .collect();
-
-                (name, version, exec_id as u64, history)
-            } else {
-                // New instance - derive from first message if it's StartOrchestration
-                if let Some(WorkItem::StartOrchestration {
-                    orchestration,
-                    version,
-                    execution_id,
-                    ..
-                }) = messages.first()
-                {
-                    let name = orchestration.clone();
-                    let version = version.as_deref().unwrap_or("1.0.0").to_string();
-                    let exec_id = *execution_id;
-                    (name, version, exec_id, Vec::new())
-                } else {
-                    // Shouldn't happen - no instance metadata and not StartOrchestration
+            let instance_id = match instance_id_row {
+                Some((id,)) => id,
+                None => {
+                    debug!(
+                        target = "duroxide::providers::postgres",
+                        operation = "fetch_orchestration_item",
+                        now_ms = now_ms,
+                        "No available instances"
+                    );
                     tx.rollback().await.ok();
                     return None;
                 }
             };
 
-        tx.commit().await.ok()?;
+            debug!(
+                target = "duroxide::providers::postgres",
+                operation = "fetch_orchestration_item",
+                instance_id = %instance_id,
+                attempt = attempt + 1,
+                "Selected available instance"
+            );
 
-        let duration_ms = start.elapsed().as_millis() as u64;
-        debug!(
-            target = "duroxide::providers::postgres",
-            operation = "fetch_orchestration_item",
-            instance_id = %instance_id,
-            execution_id = current_execution_id,
-            message_count = messages.len(),
-            history_count = history.len(),
-            duration_ms = duration_ms,
-            "Fetched orchestration item"
-        );
+            // Step 2: Atomically acquire instance lock
+            let lock_token = Self::generate_lock_token();
+            let locked_until = now_ms + self.lock_timeout_ms as i64;
 
-        Some(OrchestrationItem {
-            instance: instance_id,
-            orchestration_name,
-            execution_id: current_execution_id,
-            version: orchestration_version,
-            history,
-            messages,
-            lock_token,
-        })
+            let lock_result = match sqlx::query(&format!(
+                r#"
+                INSERT INTO {} (instance_id, lock_token, locked_until, locked_at)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT(instance_id) DO UPDATE
+                SET lock_token = $2, locked_until = $3, locked_at = $4
+                WHERE {}.locked_until <= $4
+                "#,
+                self.table_name("instance_locks"),
+                self.table_name("instance_locks")
+            ))
+            .bind(&instance_id)
+            .bind(&lock_token)
+            .bind(locked_until)
+            .bind(now_ms)
+            .execute(&mut *tx)
+            .await
+            {
+                Ok(result) => result,
+                Err(e) => {
+                    if attempt < MAX_RETRIES {
+                        debug!(
+                            target = "duroxide::providers::postgres",
+                            operation = "fetch_orchestration_item",
+                            error_type = "lock_acquisition_failed",
+                            error = %e,
+                            instance_id = %instance_id,
+                            attempt = attempt + 1,
+                            "Failed to acquire instance lock due to error, retrying"
+                        );
+                    } else {
+                        tracing::warn!(
+                            target = "duroxide::providers::postgres",
+                            operation = "fetch_orchestration_item",
+                            error_type = "lock_acquisition_failed",
+                            error = %e,
+                            instance_id = %instance_id,
+                            attempt = attempt + 1,
+                            max_retries = MAX_RETRIES,
+                            "Failed to acquire instance lock after all retries exhausted"
+                        );
+                    }
+                    tx.rollback().await.ok();
+                    if attempt < MAX_RETRIES {
+                        sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+                        continue;
+                    }
+                    return None;
+                }
+            };
+
+            if lock_result.rows_affected() == 0 {
+                debug!(
+                    target = "duroxide::providers::postgres",
+                    operation = "fetch_orchestration_item",
+                    instance_id = %instance_id,
+                    now_ms = now_ms,
+                    locked_until = locked_until,
+                    attempt = attempt + 1,
+                    max_retries = MAX_RETRIES,
+                    "Failed to acquire instance lock (already locked)"
+                );
+                tx.rollback().await.ok();
+                
+                // If we haven't exhausted retries, sleep and try again
+                if attempt < MAX_RETRIES {
+                    sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+                    continue;
+                }
+                
+                // All retries exhausted, return None
+                return None;
+            }
+
+            // Lock acquired successfully, continue with the rest of the operation
+            // Step 3: Lock ALL visible messages for this instance
+            sqlx::query(&format!(
+                r#"
+                UPDATE {}
+                SET lock_token = $1, locked_until = $2
+                WHERE instance_id = $3 AND visible_at <= NOW()
+                  AND (lock_token IS NULL OR locked_until <= $4)
+                "#,
+                self.table_name("orchestrator_queue")
+            ))
+            .bind(&lock_token)
+            .bind(locked_until)
+            .bind(&instance_id)
+            .bind(now_ms)
+            .execute(&mut *tx)
+            .await
+            .ok()?;
+
+            // Step 4: Fetch all locked messages
+            let message_rows: Vec<(i64, String)> = sqlx::query_as(&format!(
+                r#"
+                SELECT id, work_item
+                FROM {}
+                WHERE lock_token = $1
+                ORDER BY id
+                "#,
+                self.table_name("orchestrator_queue")
+            ))
+            .bind(&lock_token)
+            .fetch_all(&mut *tx)
+            .await
+            .ok()?;
+
+            if message_rows.is_empty() {
+                // No messages for instance (shouldn't happen), release lock and rollback
+                error!(
+                    target = "duroxide::providers::postgres",
+                    operation = "fetch_orchestration_item",
+                    instance_id = %instance_id,
+                    now_ms = now_ms,
+                    lock_token = %lock_token,
+                    locked_until = locked_until,
+                    "No messages found for locked instance"
+                );
+                sqlx::query(&format!(
+                    "DELETE FROM {} WHERE instance_id = $1",
+                    self.table_name("instance_locks")
+                ))
+                .bind(&instance_id)
+                .execute(&mut *tx)
+                .await
+                .ok();
+                tx.rollback().await.ok();
+                return None;
+            }
+
+            // Deserialize work items
+            let messages: Vec<WorkItem> = message_rows
+                .into_iter()
+                .filter_map(|(_, work_item_json)| {
+                    serde_json::from_str::<WorkItem>(&work_item_json).ok()
+                })
+                .collect();
+
+            debug!(
+                target = "duroxide::providers::postgres",
+                operation = "fetch_orchestration_item",
+                instance_id = %instance_id,
+                message_count = messages.len(),
+                "Fetched and marked messages for locked instance"
+            );
+
+            // Step 5: Load instance metadata
+            let instance_info: Option<(String, String, i64)> = sqlx::query_as(&format!(
+                r#"
+                SELECT orchestration_name, orchestration_version, current_execution_id
+                FROM {}
+                WHERE instance_id = $1
+                "#,
+                self.table_name("instances")
+            ))
+            .bind(&instance_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .ok()?;
+
+            let (orchestration_name, orchestration_version, current_execution_id, history) =
+                if let Some((name, version, exec_id)) = instance_info {
+                    // Instance exists - get history for current execution
+                    let history_rows: Vec<String> = sqlx::query_scalar(&format!(
+                        "SELECT event_data FROM {} WHERE instance_id = $1 AND execution_id = $2 ORDER BY event_id",
+                        self.table_name("history")
+                    ))
+                    .bind(&instance_id)
+                    .bind(exec_id)
+                    .fetch_all(&mut *tx)
+                    .await
+                    .ok()
+                    .unwrap_or_default();
+
+                    let history: Vec<Event> = history_rows
+                        .into_iter()
+                        .filter_map(|event_data| serde_json::from_str::<Event>(&event_data).ok())
+                        .collect();
+
+                    (name, version, exec_id as u64, history)
+                } else {
+                    // New instance - derive from first message if it's StartOrchestration
+                    if let Some(WorkItem::StartOrchestration {
+                        orchestration,
+                        version,
+                        execution_id,
+                        ..
+                    }) = messages.first()
+                    {
+                        let name = orchestration.clone();
+                        let version = version.as_deref().unwrap_or("1.0.0").to_string();
+                        let exec_id = *execution_id;
+                        (name, version, exec_id, Vec::new())
+                    } else {
+                        // Shouldn't happen - no instance metadata and not StartOrchestration
+                        tx.rollback().await.ok();
+                        return None;
+                    }
+                };
+
+            tx.commit().await.ok()?;
+
+            let duration_ms = start.elapsed().as_millis() as u64;
+            debug!(
+                target = "duroxide::providers::postgres",
+                operation = "fetch_orchestration_item",
+                instance_id = %instance_id,
+                execution_id = current_execution_id,
+                message_count = messages.len(),
+                history_count = history.len(),
+                duration_ms = duration_ms,
+                attempts = attempt + 1,
+                "Fetched orchestration item"
+            );
+
+            return Some(OrchestrationItem {
+                instance: instance_id,
+                orchestration_name,
+                execution_id: current_execution_id,
+                version: orchestration_version,
+                history,
+                messages,
+                lock_token,
+            });
+        }
+
+        // Should never reach here, but return None if we do
+        None
     }
 
     #[instrument(skip(self), fields(lock_token = %lock_token, execution_id = execution_id), target = "duroxide::providers::postgres")]
