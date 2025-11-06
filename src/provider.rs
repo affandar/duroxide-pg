@@ -138,40 +138,25 @@ impl Provider for PostgresProvider {
     #[instrument(skip(self), target = "duroxide::providers::postgres")]
     async fn fetch_orchestration_item(&self) -> Option<OrchestrationItem> {
         let start = std::time::Instant::now();
-        let now_ms = Self::now_millis();
 
         // Retry loop: try to acquire instance lock up to 3 times
         const MAX_RETRIES: u32 = 3;
         const RETRY_DELAY_MS: u64 = 10;
 
         for attempt in 0..=MAX_RETRIES {
+            // Recalculate now_ms for each attempt to get accurate lock expiration checks
+            let now_ms = Self::now_millis();
+            
             let mut tx = match self.pool.begin().await {
                 Ok(tx) => tx,
                 Err(e) => {
-                    if attempt < MAX_RETRIES {
-                        debug!(
-                            target = "duroxide::providers::postgres",
-                            operation = "fetch_orchestration_item",
-                            error_type = "transaction_failed",
-                            error = %e,
-                            attempt = attempt + 1,
-                            "Failed to start transaction, retrying"
-                        );
-                    } else {
-                        tracing::warn!(
-                            target = "duroxide::providers::postgres",
-                            operation = "fetch_orchestration_item",
-                            error_type = "transaction_failed",
-                            error = %e,
-                            attempt = attempt + 1,
-                            max_retries = MAX_RETRIES,
-                            "Failed to start transaction after all retries exhausted"
-                        );
-                    }
-                    if attempt < MAX_RETRIES {
-                        sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
-                        continue;
-                    }
+                    error!(
+                        target = "duroxide::providers::postgres",
+                        operation = "fetch_orchestration_item",
+                        error_type = "transaction_failed",
+                        error = %e,
+                        "Failed to start transaction"
+                    );
                     return None;
                 }
             };
@@ -234,6 +219,21 @@ impl Provider for PostgresProvider {
             let instance_id = match instance_id_row {
                 Some((id,)) => id,
                 None => {
+                    // No available instances - this could be transient during retries
+                    // If we're retrying, wait a bit and try again
+                    // Otherwise, return None immediately
+                    if attempt < MAX_RETRIES {
+                        debug!(
+                            target = "duroxide::providers::postgres",
+                            operation = "fetch_orchestration_item",
+                            now_ms = now_ms,
+                            attempt = attempt + 1,
+                            "No available instances during retry, waiting and retrying"
+                        );
+                        tx.rollback().await.ok();
+                        sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+                        continue;
+                    }
                     debug!(
                         target = "duroxide::providers::postgres",
                         operation = "fetch_orchestration_item",
@@ -316,15 +316,16 @@ impl Provider for PostgresProvider {
                     now_ms = now_ms,
                     locked_until = locked_until,
                     attempt = attempt + 1,
-                    max_retries = MAX_RETRIES,
-                    "Failed to acquire instance lock (already locked)"
+                    "Failed to acquire instance lock (race condition - instance locked between selection and lock acquisition)"
                 );
                 tx.rollback().await.ok();
                 
-                // If we haven't exhausted retries, sleep and try again
+                // Race condition: instance was locked between selection and lock acquisition.
+                // Retry by reselecting a new instance (not the same one, as it's locked).
+                // This gives other lock holders time to release.
                 if attempt < MAX_RETRIES {
                     sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
-                    continue;
+                    continue; // Will reselect a different instance
                 }
                 
                 // All retries exhausted, return None
