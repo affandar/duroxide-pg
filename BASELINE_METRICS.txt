@@ -1,0 +1,17 @@
+=== BASELINE MEASUREMENT (Before Stored Procedure Migration) ===
+Date: November 9, 2024
+Database: Azure PostgreSQL (remote)
+Test: cargo test --test e2e_samples sample_hello_world_fs
+
+Performance Metrics:
+- fetch_orchestration_item: 2,184ms, 1,375ms, 2,617ms (avg ~2,059ms)
+- ack_orchestration_item: 2,287ms, 1,894ms, 2,001ms (avg ~2,061ms)
+- fetch_work_item: 702ms, 581ms
+- ack_work_item: 345ms, 265ms
+- Total test time: 23.65 seconds
+
+Expected improvement after migration:
+- fetch_orchestration_item: ~2,000ms → ~200ms (10× faster)
+- ack_orchestration_item: ~2,000ms → ~200ms (10× faster)
+- Total turn time: ~4,000ms → ~400ms (10× faster)
+
