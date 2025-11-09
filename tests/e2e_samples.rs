@@ -852,7 +852,8 @@ async fn sample_continue_as_new_fs() {
         _ => panic!("unexpected orchestration status"),
     }
     // Check executions exist
-    let execs = store.list_executions("inst-sample-can").await;
+    let admin = store.as_management_capability().expect("Management capability should be available");
+    let execs = admin.list_executions("inst-sample-can").await.expect("list_executions should succeed");
     assert_eq!(execs, vec![1, 2, 3, 4]);
     rt.shutdown(None).await;
     common::cleanup_schema(&schema_name).await;
@@ -1261,15 +1262,16 @@ async fn sample_versioning_continue_as_new_upgrade_fs() {
     }
 
     // Verify two executions exist, exec1 continued-as-new, exec2 completed with v2 output
-    let execs = store.list_executions("inst-can-upgrade").await;
+    let admin = store.as_management_capability().expect("Management capability should be available");
+    let execs = admin.list_executions("inst-can-upgrade").await.expect("list_executions should succeed");
     assert_eq!(execs, vec![1, 2]);
-    let e1 = store.read_with_execution("inst-can-upgrade", 1).await;
+    let e1 = store.read_with_execution("inst-can-upgrade", 1).await.expect("read_with_execution should succeed");
     assert!(
         e1.iter()
             .any(|e| matches!(e, duroxide::Event::OrchestrationContinuedAsNew { .. }))
     );
     // Exec2 must start with the v1-marked payload, proving v1 ran first and handed off via CAN
-    let e2 = store.read_with_execution("inst-can-upgrade", 2).await;
+    let e2 = store.read_with_execution("inst-can-upgrade", 2).await.expect("read_with_execution should succeed");
     assert!(
         e2.iter()
             .any(|e| matches!(e, duroxide::Event::OrchestrationStarted { input, .. } if input == "v1:state"))
@@ -1362,9 +1364,11 @@ async fn sample_cancellation_parent_cascades_to_children_fs() {
     assert!(ok, "timeout waiting for parent cancel failure");
 
     // Find child instance (prefix is parent::sub::<id>) and check it was canceled too
-    let children: Vec<String> = store
+    let admin = store.as_management_capability().expect("Management capability should be available");
+    let children: Vec<String> = admin
         .list_instances()
         .await
+        .expect("list_instances should succeed")
         .into_iter()
         .filter(|i| i.starts_with("inst-sample-cancel::"))
         .collect();

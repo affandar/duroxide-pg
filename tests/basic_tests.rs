@@ -1,11 +1,7 @@
 use duroxide::providers::{ExecutionMetadata, Provider, WorkItem};
 use duroxide::{Event, INITIAL_EVENT_ID};
 use duroxide_pg::PostgresProvider;
-use std::sync::atomic::{AtomicU64, Ordering};
 use tracing_subscriber::EnvFilter;
-
-// Counter for unique test schemas
-static TEST_SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // Initialize tracing subscriber for tests with DEBUG level
 static INIT: std::sync::Once = std::sync::Once::new();
@@ -22,10 +18,11 @@ fn init_test_logging() {
     });
 }
 
-/// Helper to get a unique test schema name
+/// Helper to get a unique test schema name using GUID suffix
 fn get_test_schema() -> String {
-    let counter = TEST_SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst);
-    format!("test_{}", counter)
+    let guid = uuid::Uuid::new_v4().to_string();
+    let suffix = &guid[guid.len() - 8..]; // Last 8 characters
+    format!("test_{}", suffix)
 }
 
 /// Helper to load database URL from environment
@@ -169,7 +166,7 @@ async fn test_read_empty_instance() {
         .expect("Failed to create provider");
 
     // Reading non-existent instance should return empty vector
-    let events = provider.read("non_existent_instance").await;
+    let events = provider.read("non_existent_instance").await.expect("read should succeed");
     assert_eq!(
         events.len(),
         0,
@@ -180,7 +177,7 @@ async fn test_read_empty_instance() {
 }
 
 #[tokio::test]
-async fn test_enqueue_orchestrator_work() {
+async fn test_enqueue_for_orchestrator() {
     init_test_logging();
     let database_url = get_database_url();
     let schema_name = get_test_schema();
@@ -204,7 +201,7 @@ async fn test_enqueue_orchestrator_work() {
     };
 
     provider
-        .enqueue_orchestrator_work(work_item, None)
+        .enqueue_for_orchestrator(work_item, None)
         .await
         .expect("Failed to enqueue orchestrator work");
 
@@ -216,6 +213,7 @@ async fn test_enqueue_orchestrator_work() {
     let item = provider
         .fetch_orchestration_item()
         .await
+        .expect("fetch_orchestration_item should succeed")
         .expect("Should fetch enqueued work item");
 
     // Ack with OrchestrationStarted event and proper metadata to create instance
@@ -243,7 +241,8 @@ async fn test_enqueue_orchestrator_work() {
         .expect("Failed to ack orchestration item");
 
     // Verify instance was created
-    let execution_id_opt = provider.latest_execution_id(&instance_id).await;
+    let mgmt = provider.as_management_capability().expect("Management capability should be available");
+    let execution_id_opt = mgmt.latest_execution_id(&instance_id).await.ok();
     assert_eq!(
         execution_id_opt,
         Some(execution_id),
@@ -251,7 +250,7 @@ async fn test_enqueue_orchestrator_work() {
     );
 
     // Read history (should contain the OrchestrationStarted event we just acked)
-    let events = provider.read(&instance_id).await;
+    let events = provider.read(&instance_id).await.expect("read should succeed");
     assert_eq!(events.len(), 1, "History should contain OrchestrationStarted event");
     assert!(matches!(events[0], Event::OrchestrationStarted { .. }), "First event should be OrchestrationStarted");
 
@@ -282,13 +281,13 @@ async fn test_enqueue_and_dequeue_worker() {
 
     // Enqueue worker work
     provider
-        .enqueue_worker_work(work_item.clone())
+        .enqueue_for_worker(work_item.clone())
         .await
         .expect("Failed to enqueue worker work");
 
     // Dequeue worker work
     let (dequeued_item, lock_token) = provider
-        .dequeue_worker_peek_lock()
+        .fetch_work_item()
         .await
         .expect("Should dequeue worker work");
 
@@ -329,7 +328,7 @@ async fn test_fetch_orchestration_item_empty_queue() {
         .expect("Failed to create provider");
 
     // Fetch from empty queue should return None
-    let item = provider.fetch_orchestration_item().await;
+    let item = provider.fetch_orchestration_item().await.expect("fetch should succeed");
     assert!(item.is_none(), "Empty queue should return None");
 
     provider.cleanup_schema().await.expect("Failed to cleanup");
@@ -418,11 +417,11 @@ async fn test_list_instances_and_executions() {
     };
 
     provider
-        .enqueue_orchestrator_work(work_item1, None)
+        .enqueue_for_orchestrator(work_item1, None)
         .await
         .expect("Failed to enqueue");
     provider
-        .enqueue_orchestrator_work(work_item2, None)
+        .enqueue_for_orchestrator(work_item2, None)
         .await
         .expect("Failed to enqueue");
 
@@ -432,6 +431,7 @@ async fn test_list_instances_and_executions() {
         let item = provider
             .fetch_orchestration_item()
             .await
+            .expect("fetch_orchestration_item should succeed")
             .expect("Should fetch enqueued work item");
         
         provider

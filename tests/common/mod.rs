@@ -1,12 +1,10 @@
 use duroxide::Event;
-use duroxide::providers::{ExecutionMetadata, Provider, WorkItem};
+use duroxide::providers::{ExecutionMetadata, Provider, ProviderAdmin, WorkItem};
 use duroxide_pg::PostgresProvider;
 use sqlx::postgres::PgPoolOptions;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc as StdArc;
 use std::time::{Duration, Instant};
 
-static TEST_SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn get_database_url() -> String {
     dotenvy::dotenv().ok();
@@ -14,8 +12,9 @@ fn get_database_url() -> String {
 }
 
 fn next_schema_name() -> String {
-    let counter = TEST_SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst);
-    format!("e2e_test_{}", counter)
+    let guid = uuid::Uuid::new_v4().to_string();
+    let suffix = &guid[guid.len() - 8..]; // Last 8 characters
+    format!("e2e_test_{}", suffix)
 }
 
 #[allow(dead_code)]
@@ -60,7 +59,7 @@ where
 {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
-        let hist = store.read(instance).await;
+        let hist = store.read(instance).await.unwrap_or_default();
         if let Some(e) = selector(&hist) {
             return Some(e);
         }
@@ -120,7 +119,11 @@ pub async fn test_create_execution(
     parent_id: Option<u64>,
 ) -> Result<u64, String> {
     // Calculate next execution ID (max + 1, or INITIAL if none exist)
-    let execs = provider.list_executions(instance).await;
+    // Use ProviderAdmin trait to list executions
+    let admin = provider.as_management_capability()
+        .ok_or_else(|| "Provider doesn't support management operations".to_string())?;
+    let execs = admin.list_executions(instance).await
+        .map_err(|e| e.message.clone())?;
     let next_execution_id = if execs.is_empty() {
         duroxide::INITIAL_EXECUTION_ID
     } else {
@@ -129,7 +132,7 @@ pub async fn test_create_execution(
 
     // Enqueue StartOrchestration work item with calculated execution_id
     provider
-        .enqueue_orchestrator_work(
+        .enqueue_for_orchestrator(
             WorkItem::StartOrchestration {
                 instance: instance.to_string(),
                 orchestration: orchestration.to_string(),
@@ -148,6 +151,7 @@ pub async fn test_create_execution(
     let item = provider
         .fetch_orchestration_item()
         .await
+        .map_err(|e| e.message.clone())?
         .ok_or_else(|| "Failed to fetch orchestration item".to_string())?;
 
     // The fetched item should have the execution_id we enqueued

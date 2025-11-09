@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};
 use duroxide::providers::{
-    ExecutionInfo, ExecutionMetadata, InstanceInfo, ManagementCapability, OrchestrationItem,
+    ExecutionInfo, ExecutionMetadata, InstanceInfo, ProviderAdmin, OrchestrationItem,
     Provider, ProviderError, QueueDepths, SystemMetrics, WorkItem,
 };
 use duroxide::Event;
@@ -158,7 +158,7 @@ impl PostgresProvider {
 #[async_trait::async_trait]
 impl Provider for PostgresProvider {
     #[instrument(skip(self), target = "duroxide::providers::postgres")]
-    async fn fetch_orchestration_item(&self) -> Option<OrchestrationItem> {
+    async fn fetch_orchestration_item(&self) -> Result<Option<OrchestrationItem>, ProviderError> {
         let start = std::time::Instant::now();
 
         // Retry loop: try to acquire instance lock up to 3 times
@@ -179,7 +179,7 @@ impl Provider for PostgresProvider {
                         error = %e,
                         "Failed to start transaction"
                     );
-                    return None;
+                    return Ok(None);
                 }
             };
 
@@ -234,7 +234,7 @@ impl Provider for PostgresProvider {
                         sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
                         continue;
                     }
-                    return None;
+                    return Ok(None);
                 }
             };
 
@@ -263,7 +263,7 @@ impl Provider for PostgresProvider {
                         "No available instances"
                     );
                     tx.rollback().await.ok();
-                    return None;
+                    return Ok(None);
                 }
             };
 
@@ -326,7 +326,7 @@ impl Provider for PostgresProvider {
                         sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
                         continue;
                     }
-                    return None;
+                    return Ok(None);
                 }
             };
 
@@ -351,7 +351,7 @@ impl Provider for PostgresProvider {
                 }
                 
                 // All retries exhausted, return None
-                return None;
+                return Ok(None);
             }
 
             // Lock acquired successfully, continue with the rest of the operation
@@ -371,7 +371,7 @@ impl Provider for PostgresProvider {
             .bind(now_ms)
             .execute(&mut *tx)
             .await
-            .ok()?;
+            .map_err(|e| Self::sqlx_to_provider_error("fetch_orchestration_item", e))?;
 
             // Step 4: Fetch all locked messages
             let message_rows: Vec<(i64, String)> = sqlx::query_as(&format!(
@@ -386,7 +386,7 @@ impl Provider for PostgresProvider {
             .bind(&lock_token)
             .fetch_all(&mut *tx)
             .await
-            .ok()?;
+            .map_err(|e| Self::sqlx_to_provider_error("fetch_orchestration_item", e))?;
 
             if message_rows.is_empty() {
                 // No messages for instance (shouldn't happen), release lock and rollback
@@ -408,7 +408,7 @@ impl Provider for PostgresProvider {
                 .await
                 .ok();
                 tx.rollback().await.ok();
-                return None;
+                return Ok(None);
             }
 
             // Deserialize work items
@@ -439,7 +439,7 @@ impl Provider for PostgresProvider {
             .bind(&instance_id)
             .fetch_optional(&mut *tx)
             .await
-            .ok()?;
+            .map_err(|e| Self::sqlx_to_provider_error("fetch_orchestration_item", e))?;
 
             let (orchestration_name, orchestration_version, current_execution_id, history) =
                 if let Some((name, version_opt, exec_id)) = instance_info {
@@ -471,10 +471,30 @@ impl Provider for PostgresProvider {
 
                     (name, version, exec_id as u64, history)
                 } else {
-                    // New instance - find StartOrchestration or ContinueAsNew in all work items
-                    if let Some(start_item) = messages.iter().find(|item| {
+                    // Fallback: try to derive from history (matching SQLite provider behavior)
+                    // This handles cases where instances are created without metadata (e.g., validation tests)
+                    let history_rows: Vec<String> = sqlx::query_scalar(&format!(
+                        "SELECT event_data FROM {} WHERE instance_id = $1 ORDER BY execution_id, event_id",
+                        self.table_name("history")
+                    ))
+                    .bind(&instance_id)
+                    .fetch_all(&mut *tx)
+                    .await
+                    .ok()
+                    .unwrap_or_default();
+
+                    let history: Vec<Event> = history_rows
+                        .into_iter()
+                        .filter_map(|event_data| serde_json::from_str::<Event>(&event_data).ok())
+                        .collect();
+
+                    // Try to extract from OrchestrationStarted in history
+                    if let Some(Event::OrchestrationStarted { name, version, .. }) = history.first() {
+                        (name.clone(), version.clone(), 1u64, history)
+                    } else if let Some(start_item) = messages.iter().find(|item| {
                         matches!(item, WorkItem::StartOrchestration { .. } | WorkItem::ContinueAsNew { .. })
                     }) {
+                        // Extract from StartOrchestration or ContinueAsNew in work items
                         let (orchestration, version) = match start_item {
                             WorkItem::StartOrchestration { orchestration, version, .. }
                             | WorkItem::ContinueAsNew { orchestration, version, .. } => {
@@ -485,22 +505,18 @@ impl Provider for PostgresProvider {
                         let version = version.unwrap_or_else(|| "unknown".to_string());
                         let exec_id = match start_item {
                             WorkItem::StartOrchestration { execution_id, .. } => *execution_id,
-                            WorkItem::ContinueAsNew { .. } => {
-                                // ContinueAsNew doesn't have execution_id - use 1 as default for new instance
-                                // The actual execution_id will be set when the instance is created via ack metadata
-                                1
-                            }
+                            WorkItem::ContinueAsNew { .. } => 1,
                             _ => unreachable!(),
                         };
                         (orchestration, version, exec_id, Vec::new())
                     } else {
-                        // Shouldn't happen - no instance metadata and not StartOrchestration
-                        tx.rollback().await.ok();
-                        return None;
+                        // No instance info, no history, no StartOrchestration - use placeholder
+                        // This allows processing completions/timers/events without full metadata
+                        ("Unknown".to_string(), "unknown".to_string(), 1u64, history)
                     }
                 };
 
-            tx.commit().await.ok()?;
+            tx.commit().await.ok().ok_or_else(|| ProviderError::permanent("fetch_orchestration_item", "Failed to commit transaction"))?;
 
             let duration_ms = start.elapsed().as_millis() as u64;
             debug!(
@@ -515,7 +531,7 @@ impl Provider for PostgresProvider {
                 "Fetched orchestration item"
             );
 
-            return Some(OrchestrationItem {
+            return Ok(Some(OrchestrationItem {
                 instance: instance_id,
                 orchestration_name,
                 execution_id: current_execution_id,
@@ -523,11 +539,11 @@ impl Provider for PostgresProvider {
                 history,
                 messages,
                 lock_token,
-            });
+            }));
         }
 
         // Should never reach here, but return None if we do
-        None
+        Ok(None)
     }
 
     #[instrument(skip(self), fields(lock_token = %lock_token, execution_id = execution_id), target = "duroxide::providers::postgres")]
@@ -916,7 +932,7 @@ impl Provider for PostgresProvider {
     }
 
     #[instrument(skip(self), fields(instance = %instance), target = "duroxide::providers::postgres")]
-    async fn read(&self, instance: &str) -> Vec<Event> {
+    async fn read(&self, instance: &str) -> Result<Vec<Event>, ProviderError> {
         // Get latest execution ID from executions table (matching SQLite provider behavior)
         // Default to execution_id 1 if no executions exist
         let execution_id: i64 = sqlx::query_scalar(&format!(
@@ -942,10 +958,10 @@ impl Provider for PostgresProvider {
         .ok()
         .unwrap_or_default();
 
-        event_data_rows
+        Ok(event_data_rows
             .into_iter()
             .filter_map(|event_data| serde_json::from_str::<Event>(&event_data).ok())
-            .collect()
+            .collect())
     }
 
     #[instrument(skip(self), fields(instance = %instance, execution_id = execution_id), target = "duroxide::providers::postgres")]
@@ -1026,7 +1042,7 @@ impl Provider for PostgresProvider {
     }
 
     #[instrument(skip(self), target = "duroxide::providers::postgres")]
-    async fn enqueue_worker_work(&self, item: WorkItem) -> Result<(), ProviderError> {
+    async fn enqueue_for_worker(&self, item: WorkItem) -> Result<(), ProviderError> {
         let work_item = serde_json::to_string(&item)
             .map_err(|e| ProviderError::permanent("enqueue_worker_work", &format!("Failed to serialize work item: {}", e)))?;
 
@@ -1052,7 +1068,7 @@ impl Provider for PostgresProvider {
     }
 
     #[instrument(skip(self), target = "duroxide::providers::postgres")]
-    async fn dequeue_worker_peek_lock(&self) -> Option<(WorkItem, String)> {
+    async fn fetch_work_item(&self) -> Option<(WorkItem, String)> {
         let start = std::time::Instant::now();
 
         // Hold the SELECT FOR UPDATE lock until we update the row with our lock token.
@@ -1128,7 +1144,7 @@ impl Provider for PostgresProvider {
     }
 
     #[instrument(skip(self), fields(token = %token), target = "duroxide::providers::postgres")]
-    async fn ack_worker(&self, token: &str, completion: WorkItem) -> Result<(), ProviderError> {
+    async fn ack_work_item(&self, token: &str, completion: WorkItem) -> Result<(), ProviderError> {
         let start = std::time::Instant::now();
         
         // Extract instance ID from completion WorkItem
@@ -1187,7 +1203,7 @@ impl Provider for PostgresProvider {
     }
 
     #[instrument(skip(self), target = "duroxide::providers::postgres")]
-    async fn enqueue_orchestrator_work(
+    async fn enqueue_for_orchestrator(
         &self,
         item: WorkItem,
         delay_ms: Option<u64>,
@@ -1283,7 +1299,7 @@ impl Provider for PostgresProvider {
     }
 
     #[instrument(skip(self), fields(instance = %instance), target = "duroxide::providers::postgres")]
-    async fn read_with_execution(&self, instance: &str, execution_id: u64) -> Vec<Event> {
+    async fn read_with_execution(&self, instance: &str, execution_id: u64) -> Result<Vec<Event>, ProviderError> {
         let event_data_rows: Vec<String> = sqlx::query_scalar(&format!(
             "SELECT event_data FROM {} WHERE instance_id = $1 AND execution_id = $2 ORDER BY event_id",
             self.table_name("history")
@@ -1295,60 +1311,19 @@ impl Provider for PostgresProvider {
         .ok()
         .unwrap_or_default();
 
-        event_data_rows
+        Ok(event_data_rows
             .into_iter()
             .filter_map(|event_data| serde_json::from_str::<Event>(&event_data).ok())
-            .collect()
+            .collect())
     }
 
-    #[instrument(skip(self), fields(instance = %instance), target = "duroxide::providers::postgres")]
-    async fn latest_execution_id(&self, instance: &str) -> Option<u64> {
-        sqlx::query_scalar(&format!(
-            "SELECT {}.latest_execution_id($1)",
-            self.schema_name
-        ))
-        .bind(instance)
-        .fetch_optional(&*self.pool)
-        .await
-        .ok()
-        .flatten()
-        .map(|id: i64| id as u64)
-    }
-
-    #[instrument(skip(self), target = "duroxide::providers::postgres")]
-    async fn list_instances(&self) -> Vec<String> {
-        sqlx::query_scalar(&format!(
-            "SELECT instance_id FROM {}.list_instances()",
-            self.schema_name
-        ))
-        .fetch_all(&*self.pool)
-        .await
-        .ok()
-        .unwrap_or_default()
-    }
-
-    #[instrument(skip(self), fields(instance = %instance), target = "duroxide::providers::postgres")]
-    async fn list_executions(&self, instance: &str) -> Vec<u64> {
-        let execution_ids: Vec<i64> = sqlx::query_scalar(&format!(
-            "SELECT execution_id FROM {}.list_executions($1)",
-            self.schema_name
-        ))
-        .bind(instance)
-        .fetch_all(&*self.pool)
-        .await
-        .ok()
-        .unwrap_or_default();
-
-        execution_ids.into_iter().map(|id| id as u64).collect()
-    }
-
-    fn as_management_capability(&self) -> Option<&dyn ManagementCapability> {
+    fn as_management_capability(&self) -> Option<&dyn ProviderAdmin> {
         Some(self)
     }
 }
 
 #[async_trait::async_trait]
-impl ManagementCapability for PostgresProvider {
+impl ProviderAdmin for PostgresProvider {
     #[instrument(skip(self), target = "duroxide::providers::postgres")]
     async fn list_instances(&self) -> Result<Vec<String>, ProviderError> {
         sqlx::query_scalar(&format!(
@@ -1387,7 +1362,7 @@ impl ManagementCapability for PostgresProvider {
     }
 
     #[instrument(skip(self), fields(instance = %instance, execution_id = execution_id), target = "duroxide::providers::postgres")]
-    async fn read_execution(
+    async fn read_history_with_execution_id(
         &self,
         instance: &str,
         execution_id: u64,
@@ -1409,6 +1384,12 @@ impl ManagementCapability for PostgresProvider {
             .into_iter()
             .map(Ok)
             .collect()
+    }
+
+    #[instrument(skip(self), fields(instance = %instance), target = "duroxide::providers::postgres")]
+    async fn read_history(&self, instance: &str) -> Result<Vec<Event>, ProviderError> {
+        let execution_id = self.latest_execution_id(instance).await?;
+        self.read_history_with_execution_id(instance, execution_id).await
     }
 
     #[instrument(skip(self), fields(instance = %instance), target = "duroxide::providers::postgres")]

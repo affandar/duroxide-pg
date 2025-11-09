@@ -1,10 +1,7 @@
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc, Once,
-};
+use std::sync::{Arc, Once};
 
 use duroxide::provider_validation::{
-    atomicity, error_handling, instance_locking, lock_expiration, management, multi_execution,
+    atomicity, error_handling, instance_creation, instance_locking, lock_expiration, management, multi_execution,
     queue_semantics,
 };
 use duroxide::provider_validations::ProviderFactory;
@@ -13,7 +10,6 @@ use duroxide_pg::PostgresProvider;
 use sqlx::{postgres::PgPoolOptions, Executor};
 use tracing_subscriber::EnvFilter;
 
-static VALIDATION_SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
 static INIT_LOGGING: Once = Once::new();
 
 fn init_test_logging() {
@@ -35,8 +31,9 @@ fn get_database_url() -> String {
 }
 
 fn next_schema_name() -> String {
-    let counter = VALIDATION_SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst);
-    format!("validation_test_{}", counter)
+    let guid = uuid::Uuid::new_v4().to_string();
+    let suffix = &guid[guid.len() - 8..]; // Last 8 characters
+    format!("validation_test_{}", suffix)
 }
 
 async fn reset_schema(database_url: &str, schema_name: &str) {
@@ -149,6 +146,15 @@ mod error_handling_tests {
     provider_validation_test!(error_handling::test_missing_instance_metadata);
     provider_validation_test!(error_handling::test_corrupted_serialization_data);
     provider_validation_test!(error_handling::test_lock_expiration_during_ack);
+}
+
+mod instance_creation_tests {
+    use super::*;
+
+    provider_validation_test!(instance_creation::test_instance_creation_via_metadata);
+    provider_validation_test!(instance_creation::test_no_instance_creation_on_enqueue);
+    provider_validation_test!(instance_creation::test_null_version_handling);
+    provider_validation_test!(instance_creation::test_sub_orchestration_instance_creation);
 }
 
 mod instance_locking_tests {
