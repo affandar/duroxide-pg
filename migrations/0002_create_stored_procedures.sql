@@ -233,9 +233,6 @@ BEGIN
         $enq_worker$ LANGUAGE plpgsql;
     ', v_schema_name, v_schema_name);
 
-    -- Note: dequeue_worker_peek_lock is kept in Rust code because SELECT FOR UPDATE SKIP LOCKED
-    -- requires careful transaction handling that's better managed in application code
-
     -- Procedure: ack_worker
     -- Atomically deletes worker queue item and enqueues completion to orchestrator queue
     EXECUTE format('
@@ -262,6 +259,50 @@ BEGIN
         END;
         $ack_worker$ LANGUAGE plpgsql;
     ', v_schema_name, v_schema_name, v_schema_name);
+
+    -- Procedure: fetch_work_item
+    -- Fetches and locks a worker queue item in a single roundtrip
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.fetch_work_item(BIGINT, BIGINT)', v_schema_name);
+
+    EXECUTE format('
+        CREATE OR REPLACE FUNCTION %I.fetch_work_item(
+            p_now_ms BIGINT,
+            p_lock_timeout_ms BIGINT
+        )
+        RETURNS TABLE(
+            out_work_item TEXT,
+            out_lock_token TEXT
+        ) AS $fetch_worker$
+        DECLARE
+            v_id BIGINT;
+        BEGIN
+            SELECT q.id INTO v_id
+            FROM %I.worker_queue q
+            WHERE q.lock_token IS NULL OR q.locked_until <= p_now_ms
+            ORDER BY q.id
+            LIMIT 1
+            FOR UPDATE OF q SKIP LOCKED;
+
+            IF NOT FOUND THEN
+                RETURN;
+            END IF;
+
+            out_lock_token := ''lock_'' || gen_random_uuid()::TEXT;
+
+            UPDATE %I.worker_queue
+            SET lock_token = out_lock_token,
+                locked_until = p_now_ms + p_lock_timeout_ms
+            WHERE id = v_id;
+
+            SELECT work_item
+            INTO out_work_item
+            FROM %I.worker_queue
+            WHERE id = v_id;
+
+            RETURN NEXT;
+        END;
+        $fetch_worker$ LANGUAGE plpgsql;
+    ', v_schema_name, v_schema_name, v_schema_name, v_schema_name);
 
     -- Procedure: enqueue_orchestrator_work
     -- Enqueues work to orchestrator queue
@@ -571,6 +612,129 @@ BEGIN
     ', v_schema_name, v_schema_name, v_schema_name, v_schema_name,
        v_schema_name, v_schema_name, v_schema_name, v_schema_name,
        v_schema_name, v_schema_name, v_schema_name, v_schema_name);
+
+    -- Procedure: abandon_orchestration_item
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.abandon_orchestration_item(TEXT, BIGINT)', v_schema_name);
+
+    EXECUTE format('
+        CREATE OR REPLACE FUNCTION %I.abandon_orchestration_item(
+            p_lock_token TEXT,
+            p_delay_ms BIGINT DEFAULT NULL
+        )
+        RETURNS TEXT AS $abandon_orch$
+        DECLARE
+            v_instance_id TEXT;
+            v_visible_at TIMESTAMPTZ;
+        BEGIN
+            SELECT il.instance_id INTO v_instance_id
+            FROM %I.instance_locks il
+            WHERE il.lock_token = p_lock_token;
+
+            IF NOT FOUND THEN
+                RAISE EXCEPTION ''Invalid lock token'';
+            END IF;
+
+            IF p_delay_ms IS NOT NULL AND p_delay_ms > 0 THEN
+                v_visible_at := NOW() + (p_delay_ms::DOUBLE PRECISION / 1000.0) * INTERVAL ''1 second'';
+            ELSE
+                v_visible_at := NOW();
+            END IF;
+
+            UPDATE %I.orchestrator_queue
+            SET lock_token = NULL,
+                locked_until = NULL,
+                visible_at = v_visible_at
+            WHERE lock_token = p_lock_token;
+
+            DELETE FROM %I.instance_locks
+            WHERE lock_token = p_lock_token;
+
+            RETURN v_instance_id;
+        END;
+        $abandon_orch$ LANGUAGE plpgsql;
+    ', v_schema_name, v_schema_name, v_schema_name, v_schema_name);
+
+    -- Procedure: fetch_history (latest execution)
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.fetch_history(TEXT)', v_schema_name);
+
+    EXECUTE format('
+        CREATE OR REPLACE FUNCTION %I.fetch_history(
+            p_instance_id TEXT
+        )
+        RETURNS TABLE(out_event_data TEXT) AS $fetch_history$
+        DECLARE
+            v_execution_id BIGINT;
+        BEGIN
+            SELECT COALESCE(MAX(execution_id), 1)
+            INTO v_execution_id
+            FROM %I.executions
+            WHERE instance_id = p_instance_id;
+
+            RETURN QUERY
+            SELECT h.event_data
+            FROM %I.history h
+            WHERE h.instance_id = p_instance_id
+              AND h.execution_id = v_execution_id
+            ORDER BY h.event_id;
+        END;
+        $fetch_history$ LANGUAGE plpgsql;
+    ', v_schema_name, v_schema_name, v_schema_name);
+
+    -- Procedure: fetch_history_with_execution
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.fetch_history_with_execution(TEXT, BIGINT)', v_schema_name);
+
+    EXECUTE format('
+        CREATE OR REPLACE FUNCTION %I.fetch_history_with_execution(
+            p_instance_id TEXT,
+            p_execution_id BIGINT
+        )
+        RETURNS TABLE(out_event_data TEXT) AS $fetch_history_exec$
+        BEGIN
+            RETURN QUERY
+            SELECT h.event_data
+            FROM %I.history h
+            WHERE h.instance_id = p_instance_id
+              AND h.execution_id = p_execution_id
+            ORDER BY h.event_id;
+        END;
+        $fetch_history_exec$ LANGUAGE plpgsql;
+    ', v_schema_name, v_schema_name, v_schema_name);
+
+    -- Procedure: append_history
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.append_history(TEXT, BIGINT, JSONB)', v_schema_name);
+
+    EXECUTE format('
+        CREATE OR REPLACE FUNCTION %I.append_history(
+            p_instance_id TEXT,
+            p_execution_id BIGINT,
+            p_events JSONB
+        )
+        RETURNS VOID AS $append_hist$
+        BEGIN
+            IF p_events IS NULL OR JSONB_ARRAY_LENGTH(p_events) = 0 THEN
+                RETURN;
+            END IF;
+
+            IF EXISTS (
+                SELECT 1
+                FROM JSONB_ARRAY_ELEMENTS(p_events) elem
+                WHERE COALESCE((elem->>''event_id'')::BIGINT, 0) <= 0
+            ) THEN
+                RAISE EXCEPTION ''Invalid event_id in append_history'';
+            END IF;
+
+            INSERT INTO %I.history (instance_id, execution_id, event_id, event_type, event_data)
+            SELECT
+                p_instance_id,
+                p_execution_id,
+                (elem->>''event_id'')::BIGINT,
+                elem->>''event_type'',
+                elem->>''event_data''
+            FROM JSONB_ARRAY_ELEMENTS(p_events) AS elem
+            ON CONFLICT (instance_id, execution_id, event_id) DO NOTHING;
+        END;
+        $append_hist$ LANGUAGE plpgsql;
+    ', v_schema_name, v_schema_name, v_schema_name, v_schema_name);
 END $$;
 
 

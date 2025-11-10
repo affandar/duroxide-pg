@@ -10,7 +10,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
 use tracing::{debug, error, instrument};
-use uuid::Uuid;
 
 use crate::migrations::MigrationRunner;
 
@@ -34,8 +33,15 @@ impl PostgresProvider {
         schema_name: Option<&str>,
         lock_timeout_ms: u64,
     ) -> Result<Self> {
+        let max_connections = std::env::var("DUROXIDE_PG_POOL_MAX")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(10);
+
         let pool = PgPoolOptions::new()
-            .max_connections(10)
+            .max_connections(max_connections)
+            .min_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(30))
             .connect(database_url)
             .await?;
 
@@ -61,11 +67,6 @@ impl PostgresProvider {
         let migration_runner = MigrationRunner::new(self.pool.clone(), self.schema_name.clone());
         migration_runner.migrate().await?;
         Ok(())
-    }
-
-    /// Generate a unique lock token
-    fn generate_lock_token() -> String {
-        Uuid::new_v4().to_string()
     }
 
     /// Get current timestamp in milliseconds (Unix epoch)
@@ -361,16 +362,34 @@ impl Provider for PostgresProvider {
         lock_token: &str,
         delay_ms: Option<u64>,
     ) -> Result<(), ProviderError> {
-        let mut tx = match self.pool.begin().await {
-            Ok(tx) => tx,
+        let start = std::time::Instant::now();
+        let delay_param: Option<i64> = delay_ms.map(|d| d as i64);
+
+        let instance_id = match sqlx::query_scalar::<_, String>(&format!(
+            "SELECT {}.abandon_orchestration_item($1, $2)",
+            self.schema_name
+        ))
+        .bind(lock_token)
+        .bind(delay_param)
+        .fetch_one(&*self.pool)
+        .await
+        {
+            Ok(instance_id) => instance_id,
             Err(e) => {
-                error!(
-                    target = "duroxide::providers::postgres",
-                    operation = "abandon_orchestration_item",
-                    error_type = "transaction_failed",
-                    error = %e,
-                    "Failed to start transaction"
-                );
+                if let SqlxError::Database(db_err) = &e {
+                    if db_err.message().contains("Invalid lock token") {
+                        return Err(ProviderError::permanent(
+                            "abandon_orchestration_item",
+                            "Invalid lock token",
+                        ));
+                    }
+                } else if e.to_string().contains("Invalid lock token") {
+                    return Err(ProviderError::permanent(
+                        "abandon_orchestration_item",
+                        "Invalid lock token",
+                    ));
+                }
+
                 return Err(Self::sqlx_to_provider_error(
                     "abandon_orchestration_item",
                     e,
@@ -378,64 +397,14 @@ impl Provider for PostgresProvider {
             }
         };
 
-        // Step 1: Validate lock token and get instance_id
-        let instance_id_row: Option<(String,)> = sqlx::query_as(&format!(
-            "SELECT instance_id FROM {} WHERE lock_token = $1",
-            self.table_name("instance_locks")
-        ))
-        .bind(lock_token)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| Self::sqlx_to_provider_error("abandon_orchestration_item", e))?;
-
-        let instance_id = match instance_id_row {
-            Some((id,)) => id,
-            None => {
-                tx.rollback().await.ok();
-                return Err(ProviderError::permanent(
-                    "abandon_orchestration_item",
-                    "Invalid lock token",
-                ));
-            }
-        };
-
-        // Step 2: Clear lock_token from messages (unlock them)
-        let visible_at = if let Some(delay_ms) = delay_ms {
-            Utc::now() + chrono::Duration::milliseconds(delay_ms as i64)
-        } else {
-            Utc::now()
-        };
-
-        sqlx::query(&format!(
-            "UPDATE {} SET lock_token = NULL, locked_until = NULL, visible_at = $1 WHERE lock_token = $2",
-            self.table_name("orchestrator_queue")
-        ))
-        .bind(visible_at)
-        .bind(lock_token)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| Self::sqlx_to_provider_error("abandon_orchestration_item", e))?;
-
-        // Step 3: Remove instance lock
-        sqlx::query(&format!(
-            "DELETE FROM {} WHERE lock_token = $1",
-            self.table_name("instance_locks")
-        ))
-        .bind(lock_token)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| Self::sqlx_to_provider_error("abandon_orchestration_item", e))?;
-
-        tx.commit()
-            .await
-            .map_err(|e| Self::sqlx_to_provider_error("abandon_orchestration_item", e))?;
-
+        let duration_ms = start.elapsed().as_millis() as u64;
         debug!(
             target = "duroxide::providers::postgres",
             operation = "abandon_orchestration_item",
             instance_id = %instance_id,
             delay_ms = delay_ms,
-            "Abandoned orchestration item"
+            duration_ms = duration_ms,
+            "Abandoned orchestration item via stored procedure"
         );
 
         Ok(())
@@ -443,30 +412,14 @@ impl Provider for PostgresProvider {
 
     #[instrument(skip(self), fields(instance = %instance), target = "duroxide::providers::postgres")]
     async fn read(&self, instance: &str) -> Result<Vec<Event>, ProviderError> {
-        // Get latest execution ID from executions table (matching SQLite provider behavior)
-        // Default to execution_id 1 if no executions exist
-        let execution_id: i64 = sqlx::query_scalar(&format!(
-            "SELECT COALESCE(MAX(execution_id), 1) FROM {} WHERE instance_id = $1",
-            self.table_name("executions")
-        ))
-        .bind(instance)
-        .fetch_optional(&*self.pool)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(1);
-
-        // Load events for that execution
         let event_data_rows: Vec<String> = sqlx::query_scalar(&format!(
-            "SELECT event_data FROM {} WHERE instance_id = $1 AND execution_id = $2 ORDER BY event_id",
-            self.table_name("history")
+            "SELECT out_event_data FROM {}.fetch_history($1)",
+            self.schema_name
         ))
         .bind(instance)
-        .bind(execution_id)
         .fetch_all(&*self.pool)
         .await
-        .ok()
-        .unwrap_or_default();
+        .map_err(|e| Self::sqlx_to_provider_error("read", e))?;
 
         Ok(event_data_rows
             .into_iter()
@@ -485,7 +438,7 @@ impl Provider for PostgresProvider {
             return Ok(());
         }
 
-        // Validate that runtime provided event_ids
+        let mut events_payload = Vec::with_capacity(new_events.len());
         for event in &new_events {
             if event.event_id() == 0 {
                 error!(
@@ -501,58 +454,48 @@ impl Provider for PostgresProvider {
                     "event_id must be set by runtime",
                 ));
             }
-        }
 
-        let history_table = self.table_name("history");
-        let event_count = new_events.len();
-
-        // Use a transaction for batch insert
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| Self::sqlx_to_provider_error("append_with_execution", e))?;
-
-        for event in new_events {
-            let event_json = serde_json::to_string(&event).map_err(|e| {
+            let event_json = serde_json::to_string(event).map_err(|e| {
                 ProviderError::permanent(
                     "append_with_execution",
                     &format!("Failed to serialize event: {}", e),
                 )
             })?;
 
-            // Extract event type for indexing (discriminant name)
             let event_type = format!("{:?}", event)
                 .split('{')
                 .next()
                 .unwrap_or("Unknown")
+                .trim()
                 .to_string();
 
-            sqlx::query(&format!(
-                "INSERT INTO {} (instance_id, execution_id, event_id, event_type, event_data) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (instance_id, execution_id, event_id) DO NOTHING",
-                history_table
-            ))
-            .bind(instance)
-            .bind(execution_id as i64)
-            .bind(event.event_id() as i64)
-            .bind(event_type)
-            .bind(event_json)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| Self::sqlx_to_provider_error("append_with_execution", e))?;
+            events_payload.push(serde_json::json!({
+                "event_id": event.event_id(),
+                "event_type": event_type,
+                "event_data": event_json,
+            }));
         }
 
-        tx.commit()
-            .await
-            .map_err(|e| Self::sqlx_to_provider_error("append_with_execution", e))?;
+        let events_json = serde_json::Value::Array(events_payload);
+
+        sqlx::query(&format!(
+            "SELECT {}.append_history($1, $2, $3)",
+            self.schema_name
+        ))
+        .bind(instance)
+        .bind(execution_id as i64)
+        .bind(events_json)
+        .execute(&*self.pool)
+        .await
+        .map_err(|e| Self::sqlx_to_provider_error("append_with_execution", e))?;
 
         debug!(
             target = "duroxide::providers::postgres",
             operation = "append_with_execution",
             instance_id = %instance,
             execution_id = execution_id,
-            event_count = event_count,
-            "Appended history events"
+            event_count = new_events.len(),
+            "Appended history events via stored procedure"
         );
 
         Ok(())
@@ -591,67 +534,46 @@ impl Provider for PostgresProvider {
     #[instrument(skip(self), target = "duroxide::providers::postgres")]
     async fn fetch_work_item(&self) -> Option<(WorkItem, String)> {
         let start = std::time::Instant::now();
-
-        // Hold the SELECT FOR UPDATE lock until we update the row with our lock token.
-        let mut tx = self.pool.begin().await.ok()?;
-
-        let row: Option<(i64, String)> = sqlx::query_as(&format!(
-            r#"
-            SELECT id, work_item
-            FROM {}
-            WHERE lock_token IS NULL OR locked_until <= $1
-            ORDER BY id
-            LIMIT 1
-            FOR UPDATE SKIP LOCKED
-            "#,
-            self.table_name("worker_queue")
+        let row = match sqlx::query_as::<_, (String, String)>(&format!(
+            "SELECT * FROM {}.fetch_work_item($1, $2)",
+            self.schema_name
         ))
         .bind(Self::now_millis())
-        .fetch_optional(&mut *tx)
+        .bind(self.lock_timeout_ms as i64)
+        .fetch_optional(&*self.pool)
         .await
-        .ok()?;
-
-        let (id, work_item_json) = match row {
-            Some(row) => row,
-            None => {
-                tx.rollback().await.ok();
+        {
+            Ok(row) => row,
+            Err(e) => {
+                error!(
+                    target = "duroxide::providers::postgres",
+                    operation = "dequeue_worker_peek_lock",
+                    error_type = "stored_proc_error",
+                    error = %e,
+                    "Failed to fetch worker item via stored procedure"
+                );
                 return None;
             }
         };
 
-        // Deserialize the work item
+        let (work_item_json, lock_token) = match row {
+            Some(row) => row,
+            None => return None,
+        };
+
         let work_item: WorkItem = match serde_json::from_str(&work_item_json) {
             Ok(item) => item,
-            Err(_) => {
-                tx.rollback().await.ok();
+            Err(e) => {
+                error!(
+                    target = "duroxide::providers::postgres",
+                    operation = "dequeue_worker_peek_lock",
+                    error_type = "deserialization_failed",
+                    error = %e,
+                    "Failed to deserialize worker item"
+                );
                 return None;
             }
         };
-
-        // Generate lock token and calculate expiration
-        let lock_token = Self::generate_lock_token();
-        let now_ms = Self::now_millis();
-        let locked_until = now_ms + self.lock_timeout_ms as i64;
-
-        // Update the row with lock token
-        let rows_affected = sqlx::query(&format!(
-            "UPDATE {} SET lock_token = $1, locked_until = $2 WHERE id = $3",
-            self.table_name("worker_queue")
-        ))
-        .bind(&lock_token)
-        .bind(locked_until)
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .ok()?
-        .rows_affected();
-
-        if rows_affected == 0 {
-            tx.rollback().await.ok();
-            return None; // Row was already locked by another process
-        }
-
-        tx.commit().await.ok()?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
         debug!(
@@ -912,8 +834,8 @@ impl ProviderAdmin for PostgresProvider {
         execution_id: u64,
     ) -> Result<Vec<Event>, ProviderError> {
         let event_data_rows: Vec<String> = sqlx::query_scalar(&format!(
-            "SELECT event_data FROM {} WHERE instance_id = $1 AND execution_id = $2 ORDER BY event_id",
-            self.table_name("history")
+            "SELECT out_event_data FROM {}.fetch_history_with_execution($1, $2)",
+            self.schema_name
         ))
         .bind(instance)
         .bind(execution_id as i64)

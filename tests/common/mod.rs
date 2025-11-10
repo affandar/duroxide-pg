@@ -1,4 +1,4 @@
-use duroxide::providers::{ExecutionMetadata, Provider, ProviderAdmin, WorkItem};
+use duroxide::providers::{ExecutionMetadata, Provider, WorkItem};
 use duroxide::Event;
 use duroxide_pg::PostgresProvider;
 use sqlx::postgres::PgPoolOptions;
@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 fn get_database_url() -> String {
     dotenvy::dotenv().ok();
-    std::env::var("DATABASE_URL").expect("DATABASE_URL must be set in environment or .env file")
+    std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set")
 }
 
 fn next_schema_name() -> String {

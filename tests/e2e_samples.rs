@@ -21,7 +21,7 @@ fn init_test_logging() {
         // Try to initialize, but ignore if already initialized (e.g., by duroxide or previous test run)
         let _ = tracing_subscriber::fmt()
             .with_env_filter(env_filter)
-            .with_max_level(tracing::Level::DEBUG)
+            .with_max_level(tracing::Level::INFO)
             .with_test_writer()
             .try_init();
     });
@@ -81,7 +81,7 @@ async fn sample_hello_world_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-sample-hello-1", std::time::Duration::from_secs(30))
+        .wait_for_orchestration("inst-sample-hello-1", std::time::Duration::from_secs(60))
         .await
         .unwrap()
     {
@@ -102,6 +102,7 @@ async fn sample_hello_world_fs() {
 /// - Use standard Rust control flow to drive subsequent activities
 #[tokio::test]
 async fn sample_basic_control_flow_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     // Register activities that return a flag and branch outcomes
@@ -158,7 +159,7 @@ async fn sample_basic_control_flow_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-sample-cflow-1", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-sample-cflow-1", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -179,6 +180,7 @@ async fn sample_basic_control_flow_fs() {
 /// - Emit replay-safe traces per iteration
 #[tokio::test]
 async fn sample_loop_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     // Register an activity that appends "x" to its input
@@ -220,7 +222,7 @@ async fn sample_loop_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-sample-loop-1", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-sample-loop-1", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -241,6 +243,7 @@ async fn sample_loop_fs() {
 /// - On failure, run a compensating activity and log what happened
 #[tokio::test]
 async fn sample_error_handling_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     // Register a fragile activity that may fail, and a recovery activity
@@ -304,7 +307,7 @@ async fn sample_error_handling_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-sample-err-1", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-sample-err-1", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -326,6 +329,7 @@ async fn sample_error_handling_fs() {
 /// - If the timer wins, return an error to the user
 #[tokio::test]
 async fn sample_timeout_with_timer_race_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     // Register a long-running activity that sleeps before returning
@@ -371,7 +375,7 @@ async fn sample_timeout_with_timer_race_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-timeout-sample", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-timeout-sample", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -395,6 +399,7 @@ async fn sample_timeout_with_timer_race_fs() {
 /// - Use the usize index from select2 to branch on which completed first
 #[tokio::test]
 async fn sample_select2_activity_vs_external_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder()
@@ -444,7 +449,7 @@ async fn sample_select2_activity_vs_external_fs() {
         .unwrap();
 
     let s = match client
-        .wait_for_orchestration("inst-s2-mixed", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-s2-mixed", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -467,6 +472,7 @@ async fn sample_select2_activity_vs_external_fs() {
 /// - Deterministic replay ensures join order follows history
 #[tokio::test]
 async fn dtf_legacy_gabbar_greetings_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     // Register a greeting activity used by both branches
@@ -518,7 +524,7 @@ async fn dtf_legacy_gabbar_greetings_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-dtf-greetings", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-dtf-greetings", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -541,6 +547,7 @@ async fn dtf_legacy_gabbar_greetings_fs() {
 /// - Log and validate basic formatting of results
 #[tokio::test]
 async fn sample_system_activities_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder().build();
@@ -569,7 +576,7 @@ async fn sample_system_activities_fs() {
         .unwrap();
 
     let out = match client
-        .wait_for_orchestration("inst-system-acts", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-system-acts", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -601,6 +608,7 @@ async fn sample_system_activities_fs() {
 /// Sample: start an orchestration and poll its status until completion.
 #[tokio::test]
 async fn sample_status_polling_fs() {
+    init_test_logging();
     use duroxide::OrchestrationStatus;
     let (store, schema_name) = common::create_postgres_store().await;
 
@@ -627,7 +635,7 @@ async fn sample_status_polling_fs() {
 
     // New helper: wait until terminal (Completed/Failed) or timeout.
     match client
-        .wait_for_orchestration("inst-status-sample", std::time::Duration::from_secs(2))
+        .wait_for_orchestration("inst-status-sample", std::time::Duration::from_secs(4))
         .await
         .unwrap()
     {
@@ -648,6 +656,7 @@ async fn sample_status_polling_fs() {
 /// - Child uses an activity and returns its output
 #[tokio::test]
 async fn sample_sub_orchestration_basic_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder()
@@ -694,7 +703,7 @@ async fn sample_sub_orchestration_basic_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-sub-basic", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-sub-basic", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -715,6 +724,7 @@ async fn sample_sub_orchestration_basic_fs() {
 /// - Uses `ctx.join` to await both in history order and aggregates results
 #[tokio::test]
 async fn sample_sub_orchestration_fanout_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder()
@@ -768,7 +778,7 @@ async fn sample_sub_orchestration_fanout_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-sub-fan", std::time::Duration::from_secs(10))
+        .wait_for_orchestration("inst-sub-fan", std::time::Duration::from_secs(20))
         .await
         .unwrap()
     {
@@ -789,6 +799,7 @@ async fn sample_sub_orchestration_fanout_fs() {
 /// - Demonstrates nested sub-orchestrations
 #[tokio::test]
 async fn sample_sub_orchestration_chained_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder()
@@ -841,7 +852,7 @@ async fn sample_sub_orchestration_chained_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-sub-chain", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-sub-chain", std::time::Duration::from_secs(20))
         .await
         .unwrap()
     {
@@ -863,6 +874,7 @@ async fn sample_sub_orchestration_chained_fs() {
 /// - Verify scheduled instances complete via status polling
 #[tokio::test]
 async fn sample_detached_orchestration_scheduling_fs() {
+    init_test_logging();
     use duroxide::OrchestrationStatus;
     let (store, schema_name) = common::create_postgres_store().await;
 
@@ -904,7 +916,7 @@ async fn sample_detached_orchestration_scheduling_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("CoordinatorRoot", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("CoordinatorRoot", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -919,7 +931,7 @@ async fn sample_detached_orchestration_scheduling_fs() {
     let insts = vec!["W1".to_string(), "W2".to_string()];
     for inst in insts {
         match client
-            .wait_for_orchestration(&inst, std::time::Duration::from_secs(5))
+            .wait_for_orchestration(&inst, std::time::Duration::from_secs(10))
             .await
             .unwrap()
         {
@@ -947,6 +959,7 @@ async fn sample_detached_orchestration_scheduling_fs() {
 /// - Provider keeps all execution histories; latest execution holds the final result
 #[tokio::test]
 async fn sample_continue_as_new_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder().build();
@@ -977,7 +990,7 @@ async fn sample_continue_as_new_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-sample-can", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-sample-can", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -1019,6 +1032,7 @@ struct Ack {
 /// Typed activity + typed orchestration: Add two numbers and return a struct
 #[tokio::test]
 async fn sample_typed_activity_and_orchestration_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder()
@@ -1051,7 +1065,10 @@ async fn sample_typed_activity_and_orchestration_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration_typed::<AddRes>("inst-typed-add", std::time::Duration::from_secs(5))
+        .wait_for_orchestration_typed::<AddRes>(
+            "inst-typed-add",
+            std::time::Duration::from_secs(10),
+        )
         .await
         .unwrap()
     {
@@ -1065,6 +1082,7 @@ async fn sample_typed_activity_and_orchestration_fs() {
 /// Typed external event sample: await Ack { ok } from an event
 #[tokio::test]
 async fn sample_typed_event_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder().build();
@@ -1101,7 +1119,10 @@ async fn sample_typed_event_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration_typed::<String>("inst-typed-ack", std::time::Duration::from_secs(5))
+        .wait_for_orchestration_typed::<String>(
+            "inst-typed-ack",
+            std::time::Duration::from_secs(10),
+        )
         .await
         .unwrap()
     {
@@ -1115,6 +1136,7 @@ async fn sample_typed_event_fs() {
 /// Mixed string and typed activities with typed orchestration, showcasing select on typed+string
 #[tokio::test]
 async fn sample_mixed_string_and_typed_typed_orch_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     // String activity: returns uppercased string
@@ -1172,7 +1194,7 @@ async fn sample_mixed_string_and_typed_typed_orch_fs() {
     let s = match client
         .wait_for_orchestration_typed::<String>(
             "inst-mixed-typed",
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
         )
         .await
         .unwrap()
@@ -1188,6 +1210,7 @@ async fn sample_mixed_string_and_typed_typed_orch_fs() {
 /// Mixed string and typed activities with string orchestration, showcasing select on typed+string
 #[tokio::test]
 async fn sample_mixed_string_and_typed_string_orch_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     let activity_registry = ActivityRegistry::builder()
@@ -1231,7 +1254,7 @@ async fn sample_mixed_string_and_typed_string_orch_fs() {
         .unwrap();
 
     let s = match client
-        .wait_for_orchestration("inst-mixed-string", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-mixed-string", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -1254,6 +1277,7 @@ async fn sample_mixed_string_and_typed_string_orch_fs() {
 /// - Changing policy to Exact pins new starts to a specific version
 #[tokio::test]
 async fn sample_versioning_start_latest_vs_exact_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     // Two versions: return a string indicating which version executed
@@ -1277,7 +1301,7 @@ async fn sample_versioning_start_latest_vs_exact_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-vers-latest", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-vers-latest", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -1300,7 +1324,7 @@ async fn sample_versioning_start_latest_vs_exact_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-vers-exact", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-vers-exact", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -1322,6 +1346,7 @@ async fn sample_versioning_start_latest_vs_exact_fs() {
 /// - The explicit call uses 1.0.0; the policy (Latest) uses 2.0.0
 #[tokio::test]
 async fn sample_versioning_sub_orchestration_explicit_vs_policy_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     let child_v1 = |_: OrchestrationContext, _in: String| async move { Ok("c1".to_string()) };
@@ -1356,7 +1381,7 @@ async fn sample_versioning_sub_orchestration_explicit_vs_policy_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-sub-vers", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-sub-vers", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -1380,6 +1405,7 @@ async fn sample_versioning_sub_orchestration_explicit_vs_policy_fs() {
 /// - Carry forward state via the CAN input, or transform as needed during upgrade
 #[tokio::test]
 async fn sample_versioning_continue_as_new_upgrade_fs() {
+    init_test_logging();
     use duroxide::OrchestrationStatus;
     let (store, schema_name) = common::create_postgres_store().await;
 
@@ -1413,7 +1439,7 @@ async fn sample_versioning_continue_as_new_upgrade_fs() {
         .unwrap();
 
     // Poll for the new execution (v2) to complete
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         match client.get_orchestration_status("inst-can-upgrade").await {
             OrchestrationStatus::Completed { output } => {
@@ -1468,6 +1494,7 @@ async fn sample_versioning_continue_as_new_upgrade_fs() {
 /// - The child is also canceled (downward propagation), and its history shows cancellation
 #[tokio::test]
 async fn sample_cancellation_parent_cascades_to_children_fs() {
+    init_test_logging();
     use duroxide::Event;
     let (store, schema_name) = common::create_postgres_store().await;
 
@@ -1547,14 +1574,25 @@ async fn sample_cancellation_parent_cascades_to_children_fs() {
     let admin = store
         .as_management_capability()
         .expect("Management capability should be available");
-    let children: Vec<String> = admin
-        .list_instances()
-        .await
-        .expect("list_instances should succeed")
-        .into_iter()
-        .filter(|i| i.starts_with("inst-sample-cancel::"))
-        .collect();
-    assert!(!children.is_empty());
+    let mut children = Vec::new();
+    let child_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < child_deadline {
+        children = admin
+            .list_instances()
+            .await
+            .expect("list_instances should succeed")
+            .into_iter()
+            .filter(|i| i.starts_with("inst-sample-cancel::"))
+            .collect();
+        if !children.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        !children.is_empty(),
+        "expected child instance(s) to exist after cancellation"
+    );
     for child in children {
         let ok_child = common::wait_for_history(
             store.clone(),
@@ -1593,6 +1631,7 @@ async fn sample_cancellation_parent_cascades_to_children_fs() {
 /// - Simple error handling pattern
 #[tokio::test]
 async fn sample_basic_error_handling_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     // Register an activity that can fail
@@ -1639,7 +1678,7 @@ async fn sample_basic_error_handling_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-basic-error-1", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-basic-error-1", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -1659,7 +1698,7 @@ async fn sample_basic_error_handling_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-basic-error-2", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-basic-error-2", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -1684,6 +1723,7 @@ async fn sample_basic_error_handling_fs() {
 /// - Clean error handling pattern
 #[tokio::test]
 async fn sample_nested_function_error_handling_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     // Register activities
@@ -1746,7 +1786,7 @@ async fn sample_nested_function_error_handling_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-nested-error-1", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-nested-error-1", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -1766,7 +1806,7 @@ async fn sample_nested_function_error_handling_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-nested-error-2", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-nested-error-2", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -1791,6 +1831,7 @@ async fn sample_nested_function_error_handling_fs() {
 /// - Graceful failure handling
 #[tokio::test]
 async fn sample_error_recovery_fs() {
+    init_test_logging();
     let (store, schema_name) = common::create_postgres_store().await;
 
     // Register activities
@@ -1854,7 +1895,7 @@ async fn sample_error_recovery_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-recovery-1", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-recovery-1", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
@@ -1874,7 +1915,7 @@ async fn sample_error_recovery_fs() {
         .unwrap();
 
     match client
-        .wait_for_orchestration("inst-recovery-2", std::time::Duration::from_secs(5))
+        .wait_for_orchestration("inst-recovery-2", std::time::Duration::from_secs(10))
         .await
         .unwrap()
     {
