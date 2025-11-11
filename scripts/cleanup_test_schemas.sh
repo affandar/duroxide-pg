@@ -54,6 +54,24 @@ BEGIN
         EXECUTE format('DROP SCHEMA IF EXISTS %I CASCADE', schema_name);
         RAISE NOTICE 'Dropped schema: %', schema_name;
     END LOOP;
+    
+    -- Drop stress_test schemas
+    FOR schema_name IN 
+        SELECT nspname FROM pg_namespace 
+        WHERE nspname LIKE 'stress_test_%'
+    LOOP
+        EXECUTE format('DROP SCHEMA IF EXISTS %I CASCADE', schema_name);
+        RAISE NOTICE 'Dropped schema: %', schema_name;
+    END LOOP;
+    
+    -- Drop timing_test schemas (from performance analysis examples)
+    FOR schema_name IN 
+        SELECT nspname FROM pg_namespace 
+        WHERE nspname LIKE 'timing_test_%'
+    LOOP
+        EXECUTE format('DROP SCHEMA IF EXISTS %I CASCADE', schema_name);
+        RAISE NOTICE 'Dropped schema: %', schema_name;
+    END LOOP;
 END \$\$;
 
 -- Show remaining test schemas (if any)
@@ -63,7 +81,9 @@ SELECT
 FROM pg_namespace 
 WHERE nspname = 'e2e_test' 
    OR nspname LIKE 'e2e_test_%' 
-   OR nspname LIKE 'validation_test_%' 
+   OR nspname LIKE 'validation_test_%'
+   OR nspname LIKE 'stress_test_%'
+   OR nspname LIKE 'timing_test_%'
    OR (nspname LIKE 'test_%' AND nspname != 'test');
 EOF
 

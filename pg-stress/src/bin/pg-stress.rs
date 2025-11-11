@@ -7,7 +7,7 @@ use tracing_subscriber::EnvFilter;
 #[command(about = "PostgreSQL provider stress tests for Duroxide", long_about = None)]
 struct Args {
     /// Duration of each stress test in seconds
-    #[arg(short, long, default_value = "10")]
+    #[arg(short, long, default_value = "5")]
     duration: u64,
 
     /// PostgreSQL connection URL (or set DATABASE_URL env var)
