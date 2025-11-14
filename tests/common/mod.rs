@@ -84,10 +84,9 @@ pub async fn create_postgres_store() -> (StdArc<dyn Provider>, String) {
     let database_url = get_database_url();
     let schema_name = next_schema_name();
 
-    let provider = PostgresProvider::new_with_schema_and_timeout(
+    let provider = PostgresProvider::new_with_schema(
         &database_url,
         Some(&schema_name),
-        30000, // 30 second lock timeout
     )
     .await
     .expect("Failed to create Postgres provider for e2e tests");
@@ -162,7 +161,7 @@ pub async fn test_create_execution(
 
     // Fetch to get lock token
     let item = provider
-        .fetch_orchestration_item()
+        .fetch_orchestration_item(30) // 30 second lock timeout
         .await
         .map_err(|e| e.message.clone())?
         .ok_or_else(|| "Failed to fetch orchestration item".to_string())?;

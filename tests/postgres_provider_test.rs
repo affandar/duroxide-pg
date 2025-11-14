@@ -78,7 +78,7 @@ impl PostgresProviderFactory {
         init_test_logging();
         Self {
             database_url: get_database_url(),
-            lock_timeout_ms: 5_000,
+            lock_timeout_ms: 30_000, // 30 seconds - must match hardcoded timeout in validation tests
             current_schema_name: std::sync::Mutex::new(None),
         }
     }
@@ -90,10 +90,9 @@ impl PostgresProviderFactory {
         // Store schema name for cleanup
         *self.current_schema_name.lock().unwrap() = Some(schema_name.clone());
 
-        let provider = PostgresProvider::new_with_schema_and_timeout(
+        let provider = PostgresProvider::new_with_schema(
             &self.database_url,
             Some(&schema_name),
-            self.lock_timeout_ms,
         )
         .await
         .expect("Failed to create Postgres provider for validation tests");

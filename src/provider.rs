@@ -15,7 +15,6 @@ use crate::migrations::MigrationRunner;
 
 pub struct PostgresProvider {
     pool: Arc<PgPool>,
-    lock_timeout_ms: u64,
     schema_name: String,
 }
 
@@ -25,14 +24,6 @@ impl PostgresProvider {
     }
 
     pub async fn new_with_schema(database_url: &str, schema_name: Option<&str>) -> Result<Self> {
-        Self::new_with_schema_and_timeout(database_url, schema_name, 30_000).await
-    }
-
-    pub async fn new_with_schema_and_timeout(
-        database_url: &str,
-        schema_name: Option<&str>,
-        lock_timeout_ms: u64,
-    ) -> Result<Self> {
         let max_connections = std::env::var("DUROXIDE_PG_POOL_MAX")
             .ok()
             .and_then(|s| s.parse::<u32>().ok())
@@ -49,7 +40,6 @@ impl PostgresProvider {
 
         let provider = Self {
             pool: Arc::new(pool),
-            lock_timeout_ms,
             schema_name: schema_name.clone(),
         };
 
@@ -154,11 +144,17 @@ impl PostgresProvider {
 #[async_trait::async_trait]
 impl Provider for PostgresProvider {
     #[instrument(skip(self), target = "duroxide::providers::postgres")]
-    async fn fetch_orchestration_item(&self) -> Result<Option<OrchestrationItem>, ProviderError> {
+    async fn fetch_orchestration_item(
+        &self,
+        lock_timeout_secs: u64,
+    ) -> Result<Option<OrchestrationItem>, ProviderError> {
         let start = std::time::Instant::now();
 
         const MAX_RETRIES: u32 = 3;
         const RETRY_DELAY_MS: u64 = 10;
+
+        // Convert seconds to milliseconds
+        let lock_timeout_ms = lock_timeout_secs * 1000;
 
         for attempt in 0..=MAX_RETRIES {
             let now_ms = Self::now_millis();
@@ -176,7 +172,7 @@ impl Provider for PostgresProvider {
                 self.schema_name
             ))
             .bind(now_ms)
-            .bind(self.lock_timeout_ms as i64)
+            .bind(lock_timeout_ms as i64)
             .fetch_optional(&*self.pool)
             .await
             .map_err(|e| Self::sqlx_to_provider_error("fetch_orchestration_item", e))?;
@@ -532,14 +528,18 @@ impl Provider for PostgresProvider {
     }
 
     #[instrument(skip(self), target = "duroxide::providers::postgres")]
-    async fn fetch_work_item(&self) -> Option<(WorkItem, String)> {
+    async fn fetch_work_item(&self, lock_timeout_secs: u64) -> Option<(WorkItem, String)> {
         let start = std::time::Instant::now();
+        
+        // Convert seconds to milliseconds
+        let lock_timeout_ms = lock_timeout_secs * 1000;
+        
         let row = match sqlx::query_as::<_, (String, String)>(&format!(
             "SELECT * FROM {}.fetch_work_item($1, $2)",
             self.schema_name
         ))
         .bind(Self::now_millis())
-        .bind(self.lock_timeout_ms as i64)
+        .bind(lock_timeout_ms as i64)
         .fetch_optional(&*self.pool)
         .await
         {

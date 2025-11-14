@@ -58,10 +58,9 @@ impl ProviderStressFactory for PostgresStressFactory {
         info!("Creating PostgreSQL provider with schema: {}", schema_name);
 
         Arc::new(
-            PostgresProvider::new_with_schema_and_timeout(
+            PostgresProvider::new_with_schema(
                 &self.database_url,
                 Some(&schema_name),
-                30_000, // 30 second lock timeout
             )
             .await
             .expect("Failed to create PostgreSQL provider for stress test"),
