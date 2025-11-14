@@ -1,8 +1,9 @@
 use anyhow::Result;
 use sqlx::PgPool;
-use std::fs;
-use std::path::Path;
 use std::sync::Arc;
+use include_dir::{include_dir, Dir};
+
+static MIGRATIONS: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 
 /// Migration metadata
 #[derive(Debug)]
@@ -96,45 +97,40 @@ impl MigrationRunner {
         Ok(())
     }
 
-    /// Load migrations from the migrations directory
+    /// Load migrations from the embedded migrations directory
     fn load_migrations(&self) -> Result<Vec<Migration>> {
-        // Try multiple possible locations for migrations directory
-        let possible_paths: Vec<std::path::PathBuf> = vec![
-            Path::new("migrations").to_path_buf(),
-            Path::new("./migrations").to_path_buf(),
-            Path::new("../migrations").to_path_buf(),
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"),
-        ];
-
-        let migrations_dir = possible_paths
-            .iter()
-            .find(|path| path.exists() && path.is_dir())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Could not find migrations directory. Tried: {:?}",
-                    possible_paths
-                )
-            })?;
-
         let mut migrations = Vec::new();
 
-        let mut entries: Vec<_> = fs::read_dir(migrations_dir)?
-            .filter_map(|entry| entry.ok())
+        // Get all files from embedded directory
+        let mut files: Vec<_> = MIGRATIONS
+            .files()
+            .filter(|file| {
+                file.path()
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    == Some("sql")
+            })
             .collect();
 
-        entries.sort_by_key(|e| e.path());
+        // Sort by path to ensure consistent ordering
+        files.sort_by_key(|f| f.path());
 
-        for entry in entries {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("sql") {
-                if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                    let sql = fs::read_to_string(&path)?;
-                    let version = self.parse_version(file_name)?;
-                    let name = file_name.to_string();
+        for file in files {
+            let file_name = file
+                .path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| anyhow::anyhow!("Invalid filename in migrations"))?;
 
-                    migrations.push(Migration { version, name, sql });
-                }
-            }
+            let sql = file
+                .contents_utf8()
+                .ok_or_else(|| anyhow::anyhow!("Migration file is not valid UTF-8: {}", file_name))?
+                .to_string();
+
+            let version = self.parse_version(file_name)?;
+            let name = file_name.to_string();
+
+            migrations.push(Migration { version, name, sql });
         }
 
         Ok(migrations)
