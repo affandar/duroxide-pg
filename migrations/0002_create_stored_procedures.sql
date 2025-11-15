@@ -260,6 +260,40 @@ BEGIN
         $ack_worker$ LANGUAGE plpgsql;
     ', v_schema_name, v_schema_name, v_schema_name);
 
+    -- Procedure: renew_work_item_lock
+    -- Renews (extends) the lock timeout for a worker queue item
+    EXECUTE format('
+        CREATE OR REPLACE FUNCTION %I.renew_work_item_lock(
+            p_lock_token TEXT,
+            p_extend_secs BIGINT
+        )
+        RETURNS VOID AS $renew_lock$
+        DECLARE
+            v_now_ms BIGINT;
+            v_locked_until BIGINT;
+            v_rows_affected INTEGER;
+        BEGIN
+            -- Get current timestamp in milliseconds
+            v_now_ms := EXTRACT(EPOCH FROM NOW())::BIGINT * 1000;
+            
+            -- Calculate new locked_until timestamp
+            v_locked_until := v_now_ms + (p_extend_secs * 1000);
+            
+            -- Update lock timeout only if lock is still valid
+            UPDATE %I.worker_queue
+            SET locked_until = v_locked_until
+            WHERE lock_token = p_lock_token
+              AND locked_until > v_now_ms;
+            
+            GET DIAGNOSTICS v_rows_affected = ROW_COUNT;
+            
+            IF v_rows_affected = 0 THEN
+                RAISE EXCEPTION ''Lock token invalid, expired, or already acked'';
+            END IF;
+        END;
+        $renew_lock$ LANGUAGE plpgsql;
+    ', v_schema_name, v_schema_name);
+
     -- Procedure: fetch_work_item
     -- Fetches and locks a worker queue item in a single roundtrip
     EXECUTE format('DROP FUNCTION IF EXISTS %I.fetch_work_item(BIGINT, BIGINT)', v_schema_name);

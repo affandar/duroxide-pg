@@ -180,6 +180,11 @@ mod lock_expiration_tests {
     provider_validation_test!(lock_expiration::test_abandon_releases_lock_immediately);
     provider_validation_test!(lock_expiration::test_lock_renewal_on_ack);
     provider_validation_test!(lock_expiration::test_concurrent_lock_attempts_respect_expiration);
+    provider_validation_test!(lock_expiration::test_worker_lock_renewal_success);
+    provider_validation_test!(lock_expiration::test_worker_lock_renewal_invalid_token);
+    provider_validation_test!(lock_expiration::test_worker_lock_renewal_after_expiration);
+    provider_validation_test!(lock_expiration::test_worker_lock_renewal_extends_timeout);
+    provider_validation_test!(lock_expiration::test_worker_lock_renewal_after_ack);
 }
 
 mod multi_execution_tests {

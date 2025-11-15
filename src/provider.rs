@@ -655,6 +655,51 @@ impl Provider for PostgresProvider {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(token = %token, extend_secs = extend_secs), target = "duroxide::providers::postgres")]
+    async fn renew_work_item_lock(&self, token: &str, extend_secs: u64) -> Result<(), ProviderError> {
+        let start = std::time::Instant::now();
+
+        match sqlx::query(&format!(
+            "SELECT {}.renew_work_item_lock($1, $2)",
+            self.schema_name
+        ))
+        .bind(token)
+        .bind(extend_secs as i64)
+        .execute(&*self.pool)
+        .await
+        {
+            Ok(_) => {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                debug!(
+                    target = "duroxide::providers::postgres",
+                    operation = "renew_work_item_lock",
+                    token = %token,
+                    extend_secs = extend_secs,
+                    duration_ms = duration_ms,
+                    "Work item lock renewed successfully"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                if let SqlxError::Database(db_err) = &e {
+                    if db_err.message().contains("Lock token invalid") {
+                        return Err(ProviderError::permanent(
+                            "renew_work_item_lock",
+                            "Lock token invalid, expired, or already acked",
+                        ));
+                    }
+                } else if e.to_string().contains("Lock token invalid") {
+                    return Err(ProviderError::permanent(
+                        "renew_work_item_lock",
+                        "Lock token invalid, expired, or already acked",
+                    ));
+                }
+
+                Err(Self::sqlx_to_provider_error("renew_work_item_lock", e))
+            }
+        }
+    }
+
     #[instrument(skip(self), target = "duroxide::providers::postgres")]
     async fn enqueue_for_orchestrator(
         &self,
