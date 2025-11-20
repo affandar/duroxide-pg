@@ -255,7 +255,7 @@ async fn instance_actor_pattern_stress_test() {
         // Step 1: Get instance connection string from CMS
         let conn_info = ctx
             .schedule_activity_typed::<GetInstanceConnectionInput, GetInstanceConnectionOutput>(
-                "cms-get-instance-connection",
+                "toygres-orchestrations::activity::cms-get-instance-connection-from-database-with-very-long-name",
                 &GetInstanceConnectionInput {
                     k8s_name: input_data.k8s_name.clone(),
                 },
@@ -290,7 +290,7 @@ async fn instance_actor_pattern_stress_test() {
         // Step 3: Test connection
         let health_result = ctx
             .schedule_activity_typed::<TestConnectionInput, TestConnectionOutput>(
-                "test-connection",
+                "toygres-orchestrations::activity::test-postgres-connection-health-with-retry-logic-and-long-name",
                 &TestConnectionInput {
                     connection_string: connection_string.clone(),
                 },
@@ -313,7 +313,7 @@ async fn instance_actor_pattern_stress_test() {
         // Step 5: Record health check
         let _record = ctx
             .schedule_activity_typed::<RecordHealthCheckInput, RecordHealthCheckOutput>(
-                "cms-record-health-check",
+                "toygres-orchestrations::activity::cms-record-health-check-results-to-monitoring-system-long-name",
                 &RecordHealthCheckInput {
                     k8s_name: input_data.k8s_name.clone(),
                     status: status.to_string(),
@@ -329,7 +329,7 @@ async fn instance_actor_pattern_stress_test() {
         // Step 6: Update instance health status
         let _update = ctx
             .schedule_activity_typed::<UpdateInstanceHealthInput, UpdateInstanceHealthOutput>(
-                "cms-update-instance-health",
+                "toygres-orchestrations::activity::cms-update-instance-health-status-in-database-with-long-name",
                 &UpdateInstanceHealthInput {
                     k8s_name: input_data.k8s_name.clone(),
                     health_status: status.to_string(),
@@ -357,14 +357,14 @@ async fn instance_actor_pattern_stress_test() {
     };
 
     let orchestrations = OrchestrationRegistry::builder()
-        .register("InstanceActor", instance_actor)
+        .register("toygres-orchestrations::orchestration::instance-actor-health-check-monitor-with-very-long-name-for-testing-limits", instance_actor)
         .build();
 
     let activities = ActivityRegistry::builder()
-        .register_typed("cms-get-instance-connection", get_instance_connection)
-        .register_typed("test-connection", test_connection)
-        .register_typed("cms-record-health-check", record_health_check)
-        .register_typed("cms-update-instance-health", update_instance_health)
+        .register_typed("toygres-orchestrations::activity::cms-get-instance-connection-from-database-with-very-long-name", get_instance_connection)
+        .register_typed("toygres-orchestrations::activity::test-postgres-connection-health-with-retry-logic-and-long-name", test_connection)
+        .register_typed("toygres-orchestrations::activity::cms-record-health-check-results-to-monitoring-system-long-name", record_health_check)
+        .register_typed("toygres-orchestrations::activity::cms-update-instance-health-status-in-database-with-long-name", update_instance_health)
         .build();
 
     let rt = runtime::Runtime::start_with_store(
@@ -393,7 +393,7 @@ async fn instance_actor_pattern_stress_test() {
         let input_json = serde_json::to_string(&input).unwrap();
 
         client
-            .start_orchestration(instance_id, "InstanceActor", &input_json)
+            .start_orchestration(instance_id, "toygres-orchestrations::orchestration::instance-actor-health-check-monitor-with-very-long-name-for-testing-limits", &input_json)
             .await
             .unwrap();
 
@@ -492,7 +492,7 @@ async fn instance_actor_pattern_stress_test() {
             if let Some(Event::OrchestrationStarted { name, version, .. }) =
                 hist.iter().find(|e| matches!(e, Event::OrchestrationStarted { .. }))
             {
-                assert_eq!(name, "InstanceActor");
+                assert_eq!(name, "toygres-orchestrations::orchestration::instance-actor-health-check-monitor-with-very-long-name-for-testing-limits");
                 assert!(
                     version.starts_with("1."),
                     "{} execution {} has unexpected version: {}",

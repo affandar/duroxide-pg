@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-duroxide = { git = "https://github.com/affandar/duroxide", features = ["provider-test"] }
+duroxide = { git = "https://github.com/affandar/duroxide", branch = "refactor-versioning", features = ["provider-test"] }
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono"], default-features = false }
