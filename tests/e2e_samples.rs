@@ -1473,14 +1473,14 @@ async fn sample_versioning_continue_as_new_upgrade_fs() {
         .expect("read_with_execution should succeed");
     assert!(e1
         .iter()
-        .any(|e| matches!(e, duroxide::Event::OrchestrationContinuedAsNew { .. })));
+        .any(|e| matches!(&e.kind, duroxide::EventKind::OrchestrationContinuedAsNew { .. })));
     // Exec2 must start with the v1-marked payload, proving v1 ran first and handed off via CAN
     let e2 = store
         .read_with_execution("inst-can-upgrade", 2)
         .await
         .expect("read_with_execution should succeed");
     assert!(e2.iter().any(
-        |e| matches!(e, duroxide::Event::OrchestrationStarted { input, .. } if input == "v1:state")
+        |e| matches!(&e.kind, duroxide::EventKind::OrchestrationStarted { input, .. } if input == "v1:state")
     ));
 
     rt.shutdown(None).await;
@@ -1497,7 +1497,7 @@ async fn sample_versioning_continue_as_new_upgrade_fs() {
 #[tokio::test]
 async fn sample_cancellation_parent_cascades_to_children_fs() {
     init_test_logging();
-    use duroxide::Event;
+    use duroxide::EventKind;
     let (store, schema_name) = common::create_postgres_store().await;
 
     // Child: waits forever (until canceled). This demonstrates cooperative cancellation via runtime.
@@ -1556,8 +1556,8 @@ async fn sample_cancellation_parent_cascades_to_children_fs() {
         |hist| {
             hist.iter().rev().any(|e| {
                 matches!(
-                    e,
-                    Event::OrchestrationFailed { details, .. } if matches!(
+                    &e.kind,
+                    EventKind::OrchestrationFailed { details, .. } if matches!(
                         details,
                         duroxide::ErrorDetails::Application {
                             kind: duroxide::AppErrorKind::Cancelled { reason },
@@ -1601,11 +1601,11 @@ async fn sample_cancellation_parent_cascades_to_children_fs() {
             &child,
             |hist| {
                 hist.iter()
-                    .any(|e| matches!(e, Event::OrchestrationCancelRequested { .. }))
+                    .any(|e| matches!(&e.kind, EventKind::OrchestrationCancelRequested { .. }))
                     && hist.iter().any(|e| {
                         matches!(
-                            e,
-                            Event::OrchestrationFailed { details, .. } if matches!(
+                            &e.kind,
+                            EventKind::OrchestrationFailed { details, .. } if matches!(
                                 details,
                                 duroxide::ErrorDetails::Application {
                                     kind: duroxide::AppErrorKind::Cancelled { reason },

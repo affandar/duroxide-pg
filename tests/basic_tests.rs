@@ -1,5 +1,5 @@
 use duroxide::providers::{ExecutionMetadata, Provider, WorkItem};
-use duroxide::{Event, INITIAL_EVENT_ID};
+use duroxide::{Event, EventKind, INITIAL_EVENT_ID, INITIAL_EXECUTION_ID};
 use duroxide_pg::PostgresProvider;
 use tracing_subscriber::EnvFilter;
 
@@ -231,14 +231,19 @@ async fn test_enqueue_for_orchestrator() {
         .ack_orchestration_item(
             &item.lock_token,
             execution_id,
-            vec![Event::OrchestrationStarted {
-                event_id: INITIAL_EVENT_ID,
-                name: "TestOrchestration".to_string(),
-                version: "1.0.0".to_string(),
-                input: "test_input".to_string(),
-                parent_instance: None,
-                parent_id: None,
-            }],
+            vec![Event::with_event_id(
+                INITIAL_EVENT_ID,
+                &instance_id,
+                execution_id,
+                None,
+                EventKind::OrchestrationStarted {
+                    name: "TestOrchestration".to_string(),
+                    version: "1.0.0".to_string(),
+                    input: "test_input".to_string(),
+                    parent_instance: None,
+                    parent_id: None,
+                },
+            )],
             vec![], // no worker items
             vec![], // no orchestrator items
             ExecutionMetadata {
@@ -272,7 +277,7 @@ async fn test_enqueue_for_orchestrator() {
         "History should contain OrchestrationStarted event"
     );
     assert!(
-        matches!(events[0], Event::OrchestrationStarted { .. }),
+        matches!(&events[0].kind, EventKind::OrchestrationStarted { .. }),
         "First event should be OrchestrationStarted"
     );
 
@@ -453,7 +458,7 @@ async fn test_list_instances_and_executions() {
 
     // ⚠️ CRITICAL: Instances are NOT created on enqueue - must fetch and ack with metadata
     // Fetch and ack both work items to create instances
-    for orchestration in ["Orch1", "Orch2"] {
+    for (orchestration, instance) in [("Orch1", instance1), ("Orch2", instance2)] {
         let item = provider
             .fetch_orchestration_item(std::time::Duration::from_secs(30)) // 30 second lock timeout
             .await
@@ -463,15 +468,20 @@ async fn test_list_instances_and_executions() {
         provider
             .ack_orchestration_item(
                 &item.lock_token,
-                1u64,
-                vec![Event::OrchestrationStarted {
-                    event_id: INITIAL_EVENT_ID,
-                    name: orchestration.to_string(),
-                    version: "1.0.0".to_string(),
-                    input: "input".to_string(),
-                    parent_instance: None,
-                    parent_id: None,
-                }],
+                INITIAL_EXECUTION_ID,
+                vec![Event::with_event_id(
+                    INITIAL_EVENT_ID,
+                    instance,
+                    INITIAL_EXECUTION_ID,
+                    None,
+                    EventKind::OrchestrationStarted {
+                        name: orchestration.to_string(),
+                        version: "1.0.0".to_string(),
+                        input: "input".to_string(),
+                        parent_instance: None,
+                        parent_id: None,
+                    },
+                )],
                 vec![],
                 vec![],
                 ExecutionMetadata {

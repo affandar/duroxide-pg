@@ -5,7 +5,7 @@
 
 use duroxide::runtime::registry::ActivityRegistry;
 use duroxide::runtime::{self, OrchestrationStatus};
-use duroxide::{ActivityContext, Client, Event, OrchestrationContext, OrchestrationRegistry};
+use duroxide::{ActivityContext, Client, EventKind, OrchestrationContext, OrchestrationRegistry};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::Once;
@@ -474,7 +474,7 @@ async fn instance_actor_pattern_stress_test() {
             // Count activities scheduled in this execution
             let activity_count = hist
                 .iter()
-                .filter(|e| matches!(e, Event::ActivityScheduled { .. }))
+                .filter(|e| matches!(&e.kind, EventKind::ActivityScheduled { .. }))
                 .count();
 
             // Executions 1-49 have full cycle (4 activities), execution 50 exits immediately (0 activities)
@@ -489,17 +489,18 @@ async fn instance_actor_pattern_stress_test() {
             }
 
             // Verify OrchestrationStarted has proper version
-            if let Some(Event::OrchestrationStarted { name, version, .. }) =
-                hist.iter().find(|e| matches!(e, Event::OrchestrationStarted { .. }))
-            {
-                assert_eq!(name, "InstanceActor");
-                assert!(
-                    version.starts_with("1."),
-                    "{} execution {} has unexpected version: {}",
-                    instance_id,
-                    exec_id,
-                    version
-                );
+            let started_event = hist.iter().find(|e| matches!(&e.kind, EventKind::OrchestrationStarted { .. }));
+            if let Some(event) = started_event {
+                if let EventKind::OrchestrationStarted { name, version, .. } = &event.kind {
+                    assert_eq!(name, "InstanceActor");
+                    assert!(
+                        version.starts_with("1."),
+                        "{} execution {} has unexpected version: {}",
+                        instance_id,
+                        exec_id,
+                        version
+                    );
+                }
             }
 
             // Verify terminal event
@@ -507,7 +508,7 @@ async fn instance_actor_pattern_stress_test() {
             if exec_id < 50 {
                 assert!(
                     hist.iter()
-                        .any(|e| matches!(e, Event::OrchestrationContinuedAsNew { .. })),
+                        .any(|e| matches!(&e.kind, EventKind::OrchestrationContinuedAsNew { .. })),
                     "{} execution {} should have ContinuedAsNew",
                     instance_id,
                     exec_id
@@ -515,7 +516,7 @@ async fn instance_actor_pattern_stress_test() {
             } else {
                 assert!(
                     hist.iter()
-                        .any(|e| matches!(e, Event::OrchestrationCompleted { .. })),
+                        .any(|e| matches!(&e.kind, EventKind::OrchestrationCompleted { .. })),
                     "{} execution {} should have Completed",
                     instance_id,
                     exec_id
