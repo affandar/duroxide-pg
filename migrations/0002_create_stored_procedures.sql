@@ -391,7 +391,21 @@ BEGIN
             v_messages JSONB;
             v_lock_acquired INTEGER;
         BEGIN
-            -- Step 1: Find available instance with SELECT FOR UPDATE SKIP LOCKED
+            -- Two-phase locking to prevent deadlocks while preserving parallelism.
+            -- 
+            -- Background: INSERT ... ON CONFLICT on instance_locks can deadlock at the
+            -- B-tree index level when concurrent transactions modify different rows.
+            -- A global advisory lock would prevent deadlocks but serialize ALL fetches.
+            --
+            -- Solution: Instance-level advisory locks acquired BEFORE any row locks.
+            -- Phase 1: Peek (no lock) to find candidate instance
+            -- Phase 2: Acquire advisory lock on that specific instance  
+            -- Phase 3: Re-verify with FOR UPDATE (another tx may have taken it)
+            --
+            -- This allows parallel processing of different instances while preventing
+            -- deadlocks on the same instance.
+
+            -- Phase 1: Find a candidate instance (no FOR UPDATE yet)
             SELECT q.instance_id INTO v_instance_id
             FROM %I.orchestrator_queue q
             WHERE q.visible_at <= TO_TIMESTAMP(p_now_ms / 1000.0)
@@ -400,10 +414,31 @@ BEGIN
                 WHERE il.instance_id = q.instance_id AND il.locked_until > p_now_ms
               )
             ORDER BY q.visible_at, q.id
-            LIMIT 1
+            LIMIT 1;
+
+            IF NOT FOUND THEN
+                RETURN;
+            END IF;
+
+            -- Phase 2: Acquire instance-level advisory lock BEFORE any row locks
+            -- This prevents deadlocks by ensuring all operations on same instance
+            -- are serialized, while different instances can proceed in parallel.
+            PERFORM pg_advisory_xact_lock(hashtext(v_instance_id));
+
+            -- Phase 3: Re-verify the instance is still available with FOR UPDATE
+            -- Another transaction may have taken it between Phase 1 and Phase 2
+            SELECT q.instance_id INTO v_instance_id
+            FROM %I.orchestrator_queue q
+            WHERE q.instance_id = v_instance_id
+              AND q.visible_at <= TO_TIMESTAMP(p_now_ms / 1000.0)
+              AND NOT EXISTS (
+                SELECT 1 FROM %I.instance_locks il
+                WHERE il.instance_id = q.instance_id AND il.locked_until > p_now_ms
+              )
             FOR UPDATE OF q SKIP LOCKED;
 
             IF NOT FOUND THEN
+                -- Instance was taken by another transaction, return empty
                 RETURN;
             END IF;
 
@@ -494,7 +529,7 @@ BEGIN
         $fetch_orch$ LANGUAGE plpgsql;
     ', v_schema_name, v_schema_name, v_schema_name, v_schema_name, 
        v_schema_name, v_schema_name, v_schema_name, v_schema_name, 
-       v_schema_name, v_schema_name);
+       v_schema_name, v_schema_name, v_schema_name, v_schema_name);
 
     -- Procedure: ack_orchestration_item
     -- Acknowledges orchestration item in a single atomic operation

@@ -7,10 +7,10 @@ use duroxide::providers::{
 use duroxide::Event;
 use sqlx::{postgres::PgPoolOptions, Error as SqlxError, PgPool};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
-use tracing::{debug, error, instrument};
+use tracing::{debug, error, instrument, warn};
 
 use crate::migrations::MigrationRunner;
 
@@ -114,25 +114,25 @@ impl PostgresProvider {
                 let code = code_opt.as_deref();
                 if code == Some("40P01") {
                     // Deadlock detected
-                    ProviderError::retryable(operation, format!("Deadlock detected: {}", e))
+                    ProviderError::retryable(operation, format!("Deadlock detected: {e}"))
                 } else if code == Some("40001") {
                     // Serialization failure - permanent error (transaction conflict, not transient)
-                    ProviderError::permanent(operation, format!("Serialization failure: {}", e))
+                    ProviderError::permanent(operation, format!("Serialization failure: {e}"))
                 } else if code == Some("23505") {
                     // Unique constraint violation (duplicate event)
-                    ProviderError::permanent(operation, format!("Duplicate detected: {}", e))
+                    ProviderError::permanent(operation, format!("Duplicate detected: {e}"))
                 } else if code == Some("23503") {
                     // Foreign key constraint violation
-                    ProviderError::permanent(operation, format!("Foreign key violation: {}", e))
+                    ProviderError::permanent(operation, format!("Foreign key violation: {e}"))
                 } else {
-                    ProviderError::permanent(operation, format!("Database error: {}", e))
+                    ProviderError::permanent(operation, format!("Database error: {e}"))
                 }
             }
             SqlxError::PoolClosed | SqlxError::PoolTimedOut => {
-                ProviderError::retryable(operation, format!("Connection pool error: {}", e))
+                ProviderError::retryable(operation, format!("Connection pool error: {e}"))
             }
-            SqlxError::Io(_) => ProviderError::retryable(operation, format!("I/O error: {}", e)),
-            _ => ProviderError::permanent(operation, format!("Unexpected error: {}", e)),
+            SqlxError::Io(_) => ProviderError::retryable(operation, format!("I/O error: {e}")),
+            _ => ProviderError::permanent(operation, format!("Unexpected error: {e}")),
         }
     }
 
@@ -174,31 +174,57 @@ impl Provider for PostgresProvider {
         let start = std::time::Instant::now();
 
         const MAX_RETRIES: u32 = 3;
-        const RETRY_DELAY_MS: u64 = 10;
+        const RETRY_DELAY_MS: u64 = 50;
 
         // Convert Duration to milliseconds
         let lock_timeout_ms = lock_timeout.as_millis() as i64;
+        let mut _last_error: Option<ProviderError> = None;
 
         for attempt in 0..=MAX_RETRIES {
             let now_ms = Self::now_millis();
 
-            let row: Option<(
-                String,
-                String,
-                String,
-                i64,
-                serde_json::Value,
-                serde_json::Value,
-                String,
-            )> = sqlx::query_as(&format!(
+            let result: Result<
+                Option<(
+                    String,
+                    String,
+                    String,
+                    i64,
+                    serde_json::Value,
+                    serde_json::Value,
+                    String,
+                )>,
+                SqlxError,
+            > = sqlx::query_as(&format!(
                 "SELECT * FROM {}.fetch_orchestration_item($1, $2)",
                 self.schema_name
             ))
             .bind(now_ms)
             .bind(lock_timeout_ms)
             .fetch_optional(&*self.pool)
-            .await
-            .map_err(|e| Self::sqlx_to_provider_error("fetch_orchestration_item", e))?;
+            .await;
+
+            let row = match result {
+                Ok(r) => r,
+                Err(e) => {
+                    let provider_err = Self::sqlx_to_provider_error("fetch_orchestration_item", e);
+                    if provider_err.is_retryable() && attempt < MAX_RETRIES {
+                        warn!(
+                            target = "duroxide::providers::postgres",
+                            operation = "fetch_orchestration_item",
+                            attempt = attempt + 1,
+                            error = %provider_err,
+                            "Retryable error, will retry"
+                        );
+                        _last_error = Some(provider_err);
+                        sleep(std::time::Duration::from_millis(
+                            RETRY_DELAY_MS * (attempt as u64 + 1),
+                        ))
+                        .await;
+                        continue;
+                    }
+                    return Err(provider_err);
+                }
+            };
 
             if let Some((
                 instance_id,
@@ -213,7 +239,7 @@ impl Provider for PostgresProvider {
                 let history: Vec<Event> = serde_json::from_value(history_json).map_err(|e| {
                     ProviderError::permanent(
                         "fetch_orchestration_item",
-                        &format!("Failed to deserialize history: {}", e),
+                        format!("Failed to deserialize history: {e}"),
                     )
                 })?;
 
@@ -221,7 +247,7 @@ impl Provider for PostgresProvider {
                     serde_json::from_value(messages_json).map_err(|e| {
                         ProviderError::permanent(
                             "fetch_orchestration_item",
-                            &format!("Failed to deserialize messages: {}", e),
+                            format!("Failed to deserialize messages: {e}"),
                         )
                     })?;
 
@@ -268,6 +294,9 @@ impl Provider for PostgresProvider {
     ) -> Result<(), ProviderError> {
         let start = std::time::Instant::now();
 
+        const MAX_RETRIES: u32 = 3;
+        const RETRY_DELAY_MS: u64 = 50;
+
         let mut history_delta_payload = Vec::with_capacity(history_delta.len());
         for event in &history_delta {
             if event.event_id() == 0 {
@@ -280,11 +309,11 @@ impl Provider for PostgresProvider {
             let event_json = serde_json::to_string(event).map_err(|e| {
                 ProviderError::permanent(
                     "ack_orchestration_item",
-                    &format!("Failed to serialize event: {}", e),
+                    format!("Failed to serialize event: {e}"),
                 )
             })?;
 
-            let event_type = format!("{:?}", event)
+            let event_type = format!("{event:?}")
                 .split('{')
                 .next()
                 .unwrap_or("Unknown")
@@ -303,14 +332,14 @@ impl Provider for PostgresProvider {
         let worker_items_json = serde_json::to_value(&worker_items).map_err(|e| {
             ProviderError::permanent(
                 "ack_orchestration_item",
-                &format!("Failed to serialize worker items: {}", e),
+                format!("Failed to serialize worker items: {e}"),
             )
         })?;
 
         let orchestrator_items_json = serde_json::to_value(&orchestrator_items).map_err(|e| {
             ProviderError::permanent(
                 "ack_orchestration_item",
-                &format!("Failed to serialize orchestrator items: {}", e),
+                format!("Failed to serialize orchestrator items: {e}"),
             )
         })?;
 
@@ -321,51 +350,73 @@ impl Provider for PostgresProvider {
             "output": metadata.output,
         });
 
-        match sqlx::query(&format!(
-            "SELECT {}.ack_orchestration_item($1, $2, $3, $4, $5, $6)",
-            self.schema_name
-        ))
-        .bind(lock_token)
-        .bind(execution_id as i64)
-        .bind(history_delta_json)
-        .bind(worker_items_json)
-        .bind(orchestrator_items_json)
-        .bind(metadata_json)
-        .execute(&*self.pool)
-        .await
-        {
-            Ok(_) => {}
-            Err(e) => {
-                if let SqlxError::Database(db_err) = &e {
-                    if db_err.message().contains("Invalid lock token") {
+        for attempt in 0..=MAX_RETRIES {
+            let result = sqlx::query(&format!(
+                "SELECT {}.ack_orchestration_item($1, $2, $3, $4, $5, $6)",
+                self.schema_name
+            ))
+            .bind(lock_token)
+            .bind(execution_id as i64)
+            .bind(&history_delta_json)
+            .bind(&worker_items_json)
+            .bind(&orchestrator_items_json)
+            .bind(&metadata_json)
+            .execute(&*self.pool)
+            .await;
+
+            match result {
+                Ok(_) => {
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    debug!(
+                        target = "duroxide::providers::postgres",
+                        operation = "ack_orchestration_item",
+                        execution_id = execution_id,
+                        history_count = history_delta.len(),
+                        worker_items_count = worker_items.len(),
+                        orchestrator_items_count = orchestrator_items.len(),
+                        duration_ms = duration_ms,
+                        attempts = attempt + 1,
+                        "Acknowledged orchestration item via stored procedure"
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    // Check for permanent errors first
+                    if let SqlxError::Database(db_err) = &e {
+                        if db_err.message().contains("Invalid lock token") {
+                            return Err(ProviderError::permanent(
+                                "ack_orchestration_item",
+                                "Invalid lock token",
+                            ));
+                        }
+                    } else if e.to_string().contains("Invalid lock token") {
                         return Err(ProviderError::permanent(
                             "ack_orchestration_item",
                             "Invalid lock token",
                         ));
                     }
-                } else if e.to_string().contains("Invalid lock token") {
-                    return Err(ProviderError::permanent(
-                        "ack_orchestration_item",
-                        "Invalid lock token",
-                    ));
-                }
 
-                return Err(Self::sqlx_to_provider_error("ack_orchestration_item", e));
+                    let provider_err = Self::sqlx_to_provider_error("ack_orchestration_item", e);
+                    if provider_err.is_retryable() && attempt < MAX_RETRIES {
+                        warn!(
+                            target = "duroxide::providers::postgres",
+                            operation = "ack_orchestration_item",
+                            attempt = attempt + 1,
+                            error = %provider_err,
+                            "Retryable error, will retry"
+                        );
+                        sleep(std::time::Duration::from_millis(
+                            RETRY_DELAY_MS * (attempt as u64 + 1),
+                        ))
+                        .await;
+                        continue;
+                    }
+                    return Err(provider_err);
+                }
             }
         }
 
-        let duration_ms = start.elapsed().as_millis() as u64;
-        debug!(
-            target = "duroxide::providers::postgres",
-            operation = "ack_orchestration_item",
-            execution_id = execution_id,
-            history_count = history_delta.len(),
-            worker_items_count = worker_items.len(),
-            orchestrator_items_count = orchestrator_items.len(),
-            duration_ms = duration_ms,
-            "Acknowledged orchestration item via stored procedure"
-        );
-
+        // Should never reach here, but just in case
         Ok(())
     }
     #[instrument(skip(self), fields(lock_token = %lock_token), target = "duroxide::providers::postgres")]
@@ -470,11 +521,11 @@ impl Provider for PostgresProvider {
             let event_json = serde_json::to_string(event).map_err(|e| {
                 ProviderError::permanent(
                     "append_with_execution",
-                    &format!("Failed to serialize event: {}", e),
+                    format!("Failed to serialize event: {e}"),
                 )
             })?;
 
-            let event_type = format!("{:?}", event)
+            let event_type = format!("{event:?}")
                 .split('{')
                 .next()
                 .unwrap_or("Unknown")
@@ -518,7 +569,7 @@ impl Provider for PostgresProvider {
         let work_item = serde_json::to_string(&item).map_err(|e| {
             ProviderError::permanent(
                 "enqueue_worker_work",
-                &format!("Failed to serialize work item: {}", e),
+                format!("Failed to serialize work item: {e}"),
             )
         })?;
 
@@ -544,12 +595,15 @@ impl Provider for PostgresProvider {
     }
 
     #[instrument(skip(self), target = "duroxide::providers::postgres")]
-    async fn fetch_work_item(&self, lock_timeout: Duration) -> Result<Option<(WorkItem, String)>, ProviderError> {
+    async fn fetch_work_item(
+        &self,
+        lock_timeout: Duration,
+    ) -> Result<Option<(WorkItem, String)>, ProviderError> {
         let start = std::time::Instant::now();
-        
+
         // Convert Duration to milliseconds
         let lock_timeout_ms = lock_timeout.as_millis() as i64;
-        
+
         let row = match sqlx::query_as::<_, (String, String)>(&format!(
             "SELECT * FROM {}.fetch_work_item($1, $2)",
             self.schema_name
@@ -570,11 +624,15 @@ impl Provider for PostgresProvider {
             None => return Ok(None),
         };
 
-        let work_item: WorkItem = serde_json::from_str(&work_item_json)
-            .map_err(|e| ProviderError::permanent("fetch_work_item", &format!("Failed to deserialize worker item: {}", e)))?;
+        let work_item: WorkItem = serde_json::from_str(&work_item_json).map_err(|e| {
+            ProviderError::permanent(
+                "fetch_work_item",
+                format!("Failed to deserialize worker item: {e}"),
+            )
+        })?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
-        
+
         // Extract instance for logging - different work item types have different structures
         let instance_id = match &work_item {
             WorkItem::ActivityExecute { instance, .. } => instance.as_str(),
@@ -585,10 +643,14 @@ impl Provider for PostgresProvider {
             WorkItem::ExternalRaised { instance, .. } => instance.as_str(),
             WorkItem::CancelInstance { instance, .. } => instance.as_str(),
             WorkItem::ContinueAsNew { instance, .. } => instance.as_str(),
-            WorkItem::SubOrchCompleted { parent_instance, .. } => parent_instance.as_str(),
-            WorkItem::SubOrchFailed { parent_instance, .. } => parent_instance.as_str(),
+            WorkItem::SubOrchCompleted {
+                parent_instance, ..
+            } => parent_instance.as_str(),
+            WorkItem::SubOrchFailed {
+                parent_instance, ..
+            } => parent_instance.as_str(),
         };
-        
+
         debug!(
             target = "duroxide::providers::postgres",
             operation = "fetch_work_item",
@@ -625,7 +687,7 @@ impl Provider for PostgresProvider {
         let completion_json = serde_json::to_string(&completion).map_err(|e| {
             ProviderError::permanent(
                 "ack_worker",
-                &format!("Failed to serialize completion: {}", e),
+                format!("Failed to serialize completion: {e}"),
             )
         })?;
 
@@ -670,12 +732,16 @@ impl Provider for PostgresProvider {
     }
 
     #[instrument(skip(self), fields(token = %token), target = "duroxide::providers::postgres")]
-    async fn renew_work_item_lock(&self, token: &str, extend_for: Duration) -> Result<(), ProviderError> {
+    async fn renew_work_item_lock(
+        &self,
+        token: &str,
+        extend_for: Duration,
+    ) -> Result<(), ProviderError> {
         let start = std::time::Instant::now();
 
         // Get current time from application for consistent time reference
         let now_ms = Self::now_millis();
-        
+
         // Convert Duration to seconds for the stored procedure
         let extend_secs = extend_for.as_secs() as i64;
 
@@ -730,7 +796,7 @@ impl Provider for PostgresProvider {
         let work_item = serde_json::to_string(&item).map_err(|e| {
             ProviderError::permanent(
                 "enqueue_orchestrator_work",
-                &format!("Failed to serialize work item: {}", e),
+                format!("Failed to serialize work item: {e}"),
             )
         })?;
 
@@ -770,11 +836,15 @@ impl Provider for PostgresProvider {
                 }
             } else {
                 // fire_at_ms is 0, use delay or NOW()
-                delay.map(|d| now_ms as u64 + d.as_millis() as u64).unwrap_or(now_ms as u64)
+                delay
+                    .map(|d| now_ms as u64 + d.as_millis() as u64)
+                    .unwrap_or(now_ms as u64)
             }
         } else {
             // Non-timer item: use delay or NOW()
-            delay.map(|d| now_ms as u64 + d.as_millis() as u64).unwrap_or(now_ms as u64)
+            delay
+                .map(|d| now_ms as u64 + d.as_millis() as u64)
+                .unwrap_or(now_ms as u64)
         };
 
         let visible_at = Utc

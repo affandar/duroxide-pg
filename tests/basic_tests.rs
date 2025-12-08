@@ -23,7 +23,7 @@ fn init_test_logging() {
 fn get_test_schema() -> String {
     let guid = uuid::Uuid::new_v4().to_string();
     let suffix = &guid[guid.len() - 8..]; // Last 8 characters
-    format!("test_{}", suffix)
+    format!("test_{suffix}")
 }
 
 /// Helper to load database URL from environment
@@ -44,9 +44,7 @@ async fn test_provider_creation() {
         .expect("Failed to create provider");
 
     // Verify schema was created
-    let schema_exists: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
-    ))
+    let schema_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)")
     .bind(&schema_name)
     .fetch_one(provider.pool())
     .await
@@ -141,16 +139,14 @@ async fn test_schema_initialization() {
     ];
 
     for table in tables {
-        let exists: bool = sqlx::query_scalar(&format!(
-            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2)",
-        ))
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2)")
         .bind(&schema_name)
         .bind(table)
         .fetch_one(provider.pool())
         .await
-        .expect(&format!("Failed to check table existence: {}", table));
+        .unwrap_or_else(|_| panic!("Failed to check table existence: {table}"));
 
-        assert!(exists, "Table {} should exist", table);
+        assert!(exists, "Table {table} should exist");
     }
 
     provider.cleanup_schema().await.expect("Failed to cleanup");
@@ -207,7 +203,7 @@ async fn test_enqueue_for_orchestrator() {
         version: Some("1.0.0".to_string()),
         parent_instance: None,
         parent_id: None,
-        execution_id: execution_id,
+        execution_id,
     };
 
     provider
@@ -300,7 +296,7 @@ async fn test_enqueue_and_dequeue_worker() {
     // Create a worker work item
     let work_item = WorkItem::ActivityExecute {
         instance: instance_id.to_string(),
-        execution_id: execution_id,
+        execution_id,
         id: 100u64,
         name: "TestActivity".to_string(),
         input: "activity_input".to_string(),

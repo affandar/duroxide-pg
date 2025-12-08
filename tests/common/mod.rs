@@ -5,16 +5,17 @@ use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc as StdArc;
 use std::time::{Duration, Instant};
 
+#[allow(dead_code)]
 fn get_database_url() -> String {
     dotenvy::dotenv().ok();
-    std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set")
+    std::env::var("DATABASE_URL").expect("DATABASE_URL must be set")
 }
 
+#[allow(dead_code)]
 fn next_schema_name() -> String {
     let guid = uuid::Uuid::new_v4().to_string();
     let suffix = &guid[guid.len() - 8..]; // Last 8 characters
-    format!("e2e_test_{}", suffix)
+    format!("e2e_test_{suffix}")
 }
 
 #[allow(dead_code)]
@@ -48,8 +49,9 @@ pub async fn wait_for_subscription(
         store,
         instance,
         |hist| {
-            hist.iter()
-                .any(|e| matches!(&e.kind, EventKind::ExternalSubscribed { name: n, .. } if n == name))
+            hist.iter().any(
+                |e| matches!(&e.kind, EventKind::ExternalSubscribed { name: n, .. } if n == name),
+            )
         },
         timeout_ms,
     )
@@ -80,21 +82,20 @@ where
     }
 }
 
+#[allow(dead_code)]
 pub async fn create_postgres_store() -> (StdArc<dyn Provider>, String) {
     let database_url = get_database_url();
     let schema_name = next_schema_name();
 
-    let provider = PostgresProvider::new_with_schema(
-        &database_url,
-        Some(&schema_name),
-    )
-    .await
-    .expect("Failed to create Postgres provider for e2e tests");
+    let provider = PostgresProvider::new_with_schema(&database_url, Some(&schema_name))
+        .await
+        .expect("Failed to create Postgres provider for e2e tests");
 
     (StdArc::new(provider) as StdArc<dyn Provider>, schema_name)
 }
 
 /// Clean up a test schema by dropping it
+#[allow(dead_code)]
 pub async fn cleanup_schema(schema_name: &str) {
     let database_url = get_database_url();
     let pool = PgPoolOptions::new()
@@ -103,7 +104,7 @@ pub async fn cleanup_schema(schema_name: &str) {
         .await
         .expect("Failed to connect to database for schema cleanup");
 
-    sqlx::query(&format!("DROP SCHEMA IF EXISTS {} CASCADE", schema_name))
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema_name} CASCADE"))
         .execute(&pool)
         .await
         .expect("Failed to drop test schema");

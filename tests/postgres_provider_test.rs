@@ -34,7 +34,7 @@ fn get_database_url() -> String {
 fn next_schema_name() -> String {
     let guid = uuid::Uuid::new_v4().to_string();
     let suffix = &guid[guid.len() - 8..]; // Last 8 characters
-    format!("validation_test_{}", suffix)
+    format!("validation_test_{suffix}")
 }
 
 async fn reset_schema(database_url: &str, schema_name: &str) {
@@ -55,13 +55,13 @@ async fn reset_schema(database_url: &str, schema_name: &str) {
         ];
 
         for table in tables {
-            let qualified = format!("public.{}", table);
-            pool.execute(format!("DROP TABLE IF EXISTS {} CASCADE", qualified).as_str())
+            let qualified = format!("public.{table}");
+            pool.execute(format!("DROP TABLE IF EXISTS {qualified} CASCADE").as_str())
                 .await
                 .expect("Failed to drop table in public schema");
         }
     } else {
-        pool.execute(format!("DROP SCHEMA IF EXISTS {} CASCADE", schema_name).as_str())
+        pool.execute(format!("DROP SCHEMA IF EXISTS {schema_name} CASCADE").as_str())
             .await
             .expect("Failed to drop validation schema");
     }
@@ -71,6 +71,12 @@ pub struct PostgresProviderFactory {
     database_url: String,
     lock_timeout_ms: u64,
     current_schema_name: std::sync::Mutex<Option<String>>,
+}
+
+impl Default for PostgresProviderFactory {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PostgresProviderFactory {
@@ -90,18 +96,16 @@ impl PostgresProviderFactory {
         // Store schema name for cleanup
         *self.current_schema_name.lock().unwrap() = Some(schema_name.clone());
 
-        let provider = PostgresProvider::new_with_schema(
-            &self.database_url,
-            Some(&schema_name),
-        )
-        .await
-        .expect("Failed to create Postgres provider for validation tests");
+        let provider = PostgresProvider::new_with_schema(&self.database_url, Some(&schema_name))
+            .await
+            .expect("Failed to create Postgres provider for validation tests");
 
         Arc::new(provider)
     }
 
     async fn cleanup_schema(&self) {
-        if let Some(schema_name) = self.current_schema_name.lock().unwrap().take() {
+        let schema_name = self.current_schema_name.lock().unwrap().take();
+        if let Some(schema_name) = schema_name {
             reset_schema(&self.database_url, &schema_name).await;
         }
     }

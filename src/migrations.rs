@@ -1,7 +1,7 @@
 use anyhow::Result;
+use include_dir::{include_dir, Dir};
 use sqlx::PgPool;
 use std::sync::Arc;
-use include_dir::{include_dir, Dir};
 
 static MIGRATIONS: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 
@@ -104,12 +104,7 @@ impl MigrationRunner {
         // Get all files from embedded directory
         let mut files: Vec<_> = MIGRATIONS
             .files()
-            .filter(|file| {
-                file.path()
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    == Some("sql")
-            })
+            .filter(|file| file.path().extension().and_then(|ext| ext.to_str()) == Some("sql"))
             .collect();
 
         // Sort by path to ensure consistent ordering
@@ -124,7 +119,7 @@ impl MigrationRunner {
 
             let sql = file
                 .contents_utf8()
-                .ok_or_else(|| anyhow::anyhow!("Migration file is not valid UTF-8: {}", file_name))?
+                .ok_or_else(|| anyhow::anyhow!("Migration file is not valid UTF-8: {file_name}"))?
                 .to_string();
 
             let version = self.parse_version(file_name)?;
@@ -141,11 +136,11 @@ impl MigrationRunner {
         let version_str = filename
             .split('_')
             .next()
-            .ok_or_else(|| anyhow::anyhow!("Invalid migration filename: {}", filename))?;
+            .ok_or_else(|| anyhow::anyhow!("Invalid migration filename: {filename}"))?;
 
         version_str
             .parse::<i64>()
-            .map_err(|e| anyhow::anyhow!("Invalid migration version {}: {}", version_str, e))
+            .map_err(|e| anyhow::anyhow!("Invalid migration version {version_str}: {e}"))
     }
 
     /// Ensure migration tracking table exists
@@ -170,9 +165,9 @@ impl MigrationRunner {
     /// Check if key tables exist
     async fn check_tables_exist(&self) -> Result<bool> {
         // Check if instances table exists (as a proxy for all tables)
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'instances')",
-        ))
+        )
         .bind(&self.schema_name)
         .fetch_one(&*self.pool)
         .await?;

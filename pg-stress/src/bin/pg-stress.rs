@@ -49,12 +49,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Show results filename for reference
     let results_file = duroxide_pg_stress::get_results_filename(&database_url);
     eprintln!("\nResults can be tracked in: {}", results_file);
-    
+
     if args.track || args.track_cloud {
         eprintln!("Note: Automatic result tracking not yet implemented");
-        eprintln!("Manually append results to {} for historical tracking", results_file);
+        eprintln!(
+            "Manually append results to {} for historical tracking",
+            results_file
+        );
     }
 
     Ok(())
 }
-

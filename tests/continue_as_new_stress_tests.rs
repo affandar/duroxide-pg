@@ -46,7 +46,7 @@ async fn concurrent_continue_as_new_chains() {
             ctx.continue_as_new((count + 1).to_string());
             Ok("continuing".to_string())
         } else {
-            Ok(format!("completed at {}", count))
+            Ok(format!("completed at {count}"))
         }
     };
 
@@ -56,19 +56,14 @@ async fn concurrent_continue_as_new_chains() {
 
     let activities = ActivityRegistry::builder().build();
 
-    let rt = runtime::Runtime::start_with_store(
-        store.clone(),
-        Arc::new(activities),
-        orchestrations,
-    )
-    .await;
+    let rt =
+        runtime::Runtime::start_with_store(store.clone(), Arc::new(activities), orchestrations)
+            .await;
 
     let client = Client::new(store.clone());
 
     // Start 5 concurrent chains
-    let instances: Vec<String> = (0..5)
-        .map(|i| format!("concurrent-chain-{}", i))
-        .collect();
+    let instances: Vec<String> = (0..5).map(|i| format!("concurrent-chain-{i}")).collect();
 
     for instance in &instances {
         client
@@ -91,7 +86,7 @@ async fn concurrent_continue_as_new_chains() {
             OrchestrationStatus::Failed { details } => {
                 panic!("Chain {} failed: {}", instance, details.display_message());
             }
-            _ => panic!("Unexpected status for {}: {:?}", instance, status),
+            _ => panic!("Unexpected status for {instance}: {status:?}"),
         }
     }
 
@@ -107,9 +102,7 @@ async fn concurrent_continue_as_new_chains() {
 
             assert!(
                 !hist.is_empty(),
-                "Chain {} execution {} has empty history",
-                instance,
-                exec_id
+                "Chain {instance} execution {exec_id} has empty history"
             );
         }
     }
@@ -194,8 +187,8 @@ async fn instance_actor_pattern_stress_test() {
 
     // Mock activities
     let get_instance_connection = |_ctx: ActivityContext, input: String| async move {
-        let parsed: GetInstanceConnectionInput = serde_json::from_str(&input)
-            .map_err(|e| format!("Parse error: {}", e))?;
+        let parsed: GetInstanceConnectionInput =
+            serde_json::from_str(&input).map_err(|e| format!("Parse error: {e}"))?;
 
         let output = GetInstanceConnectionOutput {
             found: true,
@@ -203,12 +196,12 @@ async fn instance_actor_pattern_stress_test() {
             state: Some("running".to_string()),
         };
 
-        serde_json::to_string(&output).map_err(|e| format!("Serialize error: {}", e))
+        serde_json::to_string(&output).map_err(|e| format!("Serialize error: {e}"))
     };
 
     let test_connection = |_ctx: ActivityContext, input: String| async move {
-        let parsed: TestConnectionInput = serde_json::from_str(&input)
-            .map_err(|e| format!("Parse error: {}", e))?;
+        let parsed: TestConnectionInput =
+            serde_json::from_str(&input).map_err(|e| format!("Parse error: {e}"))?;
 
         // Simulate connection test
         assert!(parsed.connection_string.starts_with("postgresql://"));
@@ -217,29 +210,29 @@ async fn instance_actor_pattern_stress_test() {
             version: "PostgreSQL 16.1".to_string(),
         };
 
-        serde_json::to_string(&output).map_err(|e| format!("Serialize error: {}", e))
+        serde_json::to_string(&output).map_err(|e| format!("Serialize error: {e}"))
     };
 
     let record_health_check = |_ctx: ActivityContext, input: String| async move {
-        let _parsed: RecordHealthCheckInput = serde_json::from_str(&input)
-            .map_err(|e| format!("Parse error: {}", e))?;
+        let _parsed: RecordHealthCheckInput =
+            serde_json::from_str(&input).map_err(|e| format!("Parse error: {e}"))?;
 
         let output = RecordHealthCheckOutput { recorded: true };
-        serde_json::to_string(&output).map_err(|e| format!("Serialize error: {}", e))
+        serde_json::to_string(&output).map_err(|e| format!("Serialize error: {e}"))
     };
 
     let update_instance_health = |_ctx: ActivityContext, input: String| async move {
-        let _parsed: UpdateInstanceHealthInput = serde_json::from_str(&input)
-            .map_err(|e| format!("Parse error: {}", e))?;
+        let _parsed: UpdateInstanceHealthInput =
+            serde_json::from_str(&input).map_err(|e| format!("Parse error: {e}"))?;
 
         let output = UpdateInstanceHealthOutput { updated: true };
-        serde_json::to_string(&output).map_err(|e| format!("Serialize error: {}", e))
+        serde_json::to_string(&output).map_err(|e| format!("Serialize error: {e}"))
     };
 
     // Instance actor orchestration (50 iterations for stress test)
     let instance_actor = |ctx: OrchestrationContext, input: String| async move {
-        let mut input_data: InstanceActorInput = serde_json::from_str(&input)
-            .map_err(|e| format!("Failed to parse input: {}", e))?;
+        let mut input_data: InstanceActorInput =
+            serde_json::from_str(&input).map_err(|e| format!("Failed to parse input: {e}"))?;
 
         ctx.trace_info(format!(
             "Instance actor iteration {} for: {} (orchestration: {})",
@@ -249,7 +242,10 @@ async fn instance_actor_pattern_stress_test() {
         // Exit after 50 iterations for stress test
         // Executions 1-49 (iteration 0-48) do full cycle, execution 50 (iteration 49) completes
         if input_data.iteration >= 49 {
-            return Ok(format!("completed after {} executions", input_data.iteration + 1));
+            return Ok(format!(
+                "completed after {} executions",
+                input_data.iteration + 1
+            ));
         }
 
         // Step 1: Get instance connection string from CMS
@@ -262,7 +258,7 @@ async fn instance_actor_pattern_stress_test() {
             )
             .into_activity_typed::<GetInstanceConnectionOutput>()
             .await
-            .map_err(|e| format!("Failed to get instance connection: {}", e))?;
+            .map_err(|e| format!("Failed to get instance connection: {e}"))?;
 
         // Step 2: Check if instance still exists
         if !conn_info.found {
@@ -276,11 +272,13 @@ async fn instance_actor_pattern_stress_test() {
                 ctx.trace_warn("No connection string available yet, skipping health check");
 
                 // Wait and retry
-                ctx.schedule_timer(std::time::Duration::from_millis(30000)).into_timer().await; // 30 seconds
+                ctx.schedule_timer(std::time::Duration::from_millis(30000))
+                    .into_timer()
+                    .await; // 30 seconds
 
                 input_data.iteration += 1;
                 let input_json = serde_json::to_string(&input_data)
-                    .map_err(|e| format!("Failed to serialize input: {}", e))?;
+                    .map_err(|e| format!("Failed to serialize input: {e}"))?;
                 ctx.continue_as_new(input_json);
 
                 return Ok("retrying".to_string());
@@ -305,7 +303,7 @@ async fn instance_actor_pattern_stress_test() {
                 ("healthy", Some(output.version), None)
             }
             Err(e) => {
-                ctx.trace_warn(format!("Health check failed: {}", e));
+                ctx.trace_warn(format!("Health check failed: {e}"));
                 ("unhealthy", None, Some(e.to_string()))
             }
         };
@@ -324,7 +322,7 @@ async fn instance_actor_pattern_stress_test() {
             )
             .into_activity_typed::<RecordHealthCheckOutput>()
             .await
-            .map_err(|e| format!("Failed to record health check: {}", e))?;
+            .map_err(|e| format!("Failed to record health check: {e}"))?;
 
         // Step 6: Update instance health status
         let _update = ctx
@@ -337,19 +335,21 @@ async fn instance_actor_pattern_stress_test() {
             )
             .into_activity_typed::<UpdateInstanceHealthOutput>()
             .await
-            .map_err(|e| format!("Failed to update instance health: {}", e))?;
+            .map_err(|e| format!("Failed to update instance health: {e}"))?;
 
-        ctx.trace_info(format!("Health check complete, status: {}", status));
+        ctx.trace_info(format!("Health check complete, status: {status}"));
 
         // Step 7: Wait before next check
-        ctx.schedule_timer(std::time::Duration::from_millis(30000)).into_timer().await; // 30 seconds
+        ctx.schedule_timer(std::time::Duration::from_millis(30000))
+            .into_timer()
+            .await; // 30 seconds
 
         ctx.trace_info("Restarting instance actor with continue-as-new");
 
         // Step 8: Continue as new
         input_data.iteration += 1;
         let input_json = serde_json::to_string(&input_data)
-            .map_err(|e| format!("Failed to serialize input: {}", e))?;
+            .map_err(|e| format!("Failed to serialize input: {e}"))?;
 
         ctx.continue_as_new(input_json);
 
@@ -367,12 +367,9 @@ async fn instance_actor_pattern_stress_test() {
         .register_typed("cms-update-instance-health", update_instance_health)
         .build();
 
-    let rt = runtime::Runtime::start_with_store(
-        store.clone(),
-        Arc::new(activities),
-        orchestrations,
-    )
-    .await;
+    let rt =
+        runtime::Runtime::start_with_store(store.clone(), Arc::new(activities), orchestrations)
+            .await;
 
     let client = Client::new(store.clone());
 
@@ -421,18 +418,20 @@ async fn instance_actor_pattern_stress_test() {
                     instance_id,
                     details.display_message()
                 );
-                eprintln!("=== DUMPING ALL EXECUTION HISTORIES FOR {} ===\n", instance_id);
+                eprintln!(
+                    "=== DUMPING ALL EXECUTION HISTORIES FOR {instance_id} ===\n"
+                );
 
                 // Find how many executions exist
                 let mut exec_id = 1;
                 loop {
                     match client.read_execution_history(instance_id, exec_id).await {
                         Ok(hist) if !hist.is_empty() => {
-                            eprintln!("--- Execution {} ---", exec_id);
+                            eprintln!("--- Execution {exec_id} ---");
                             eprintln!("Events: {}", hist.len());
                             for (idx, event) in hist.iter().enumerate() {
                                 let event_json = serde_json::to_string_pretty(event)
-                                    .unwrap_or_else(|_| format!("{:?}", event));
+                                    .unwrap_or_else(|_| format!("{event:?}"));
                                 eprintln!("  Event {}: {}", idx + 1, event_json);
                             }
                             eprintln!();
@@ -455,7 +454,7 @@ async fn instance_actor_pattern_stress_test() {
                     details.display_message()
                 );
             }
-            _ => panic!("Unexpected status for {}: {:?}", instance_id, status),
+            _ => panic!("Unexpected status for {instance_id}: {status:?}"),
         }
     }
 
@@ -481,24 +480,20 @@ async fn instance_actor_pattern_stress_test() {
             if exec_id < 50 {
                 assert!(
                     activity_count >= 4,
-                    "{} execution {} should have at least 4 activities, has {}",
-                    instance_id,
-                    exec_id,
-                    activity_count
+                    "{instance_id} execution {exec_id} should have at least 4 activities, has {activity_count}"
                 );
             }
 
             // Verify OrchestrationStarted has proper version
-            let started_event = hist.iter().find(|e| matches!(&e.kind, EventKind::OrchestrationStarted { .. }));
+            let started_event = hist
+                .iter()
+                .find(|e| matches!(&e.kind, EventKind::OrchestrationStarted { .. }));
             if let Some(event) = started_event {
                 if let EventKind::OrchestrationStarted { name, version, .. } = &event.kind {
                     assert_eq!(name, "InstanceActor");
                     assert!(
                         version.starts_with("1."),
-                        "{} execution {} has unexpected version: {}",
-                        instance_id,
-                        exec_id,
-                        version
+                        "{instance_id} execution {exec_id} has unexpected version: {version}"
                     );
                 }
             }
@@ -509,17 +504,13 @@ async fn instance_actor_pattern_stress_test() {
                 assert!(
                     hist.iter()
                         .any(|e| matches!(&e.kind, EventKind::OrchestrationContinuedAsNew { .. })),
-                    "{} execution {} should have ContinuedAsNew",
-                    instance_id,
-                    exec_id
+                    "{instance_id} execution {exec_id} should have ContinuedAsNew"
                 );
             } else {
                 assert!(
                     hist.iter()
                         .any(|e| matches!(&e.kind, EventKind::OrchestrationCompleted { .. })),
-                    "{} execution {} should have Completed",
-                    instance_id,
-                    exec_id
+                    "{instance_id} execution {exec_id} should have Completed"
                 );
             }
         }
@@ -535,4 +526,3 @@ async fn instance_actor_pattern_stress_test() {
     rt.shutdown(None).await;
     common::cleanup_schema(&schema_name).await;
 }
-

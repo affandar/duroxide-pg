@@ -7,8 +7,8 @@ use duroxide::runtime::{self};
 use duroxide::{ActivityContext, Client, OrchestrationContext, OrchestrationRegistry};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::Duration;
 use std::sync::Once;
+use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 mod common;
@@ -555,7 +555,10 @@ async fn sample_system_activities_fs() {
 
     let orchestration = |ctx: OrchestrationContext, _input: String| async move {
         let now = ctx.utcnow().await?;
-        let now_ms = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let now_ms = now
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
         let guid = ctx.new_guid().await?;
         ctx.trace_info(format!("system now={now_ms}, guid={guid}"));
         Ok(format!("n={now_ms},g={guid}"))
@@ -616,7 +619,9 @@ async fn sample_status_polling_fs() {
 
     let activity_registry = ActivityRegistry::builder().build();
     let orchestration = |ctx: OrchestrationContext, _input: String| async move {
-        ctx.schedule_timer(std::time::Duration::from_millis(20)).into_timer().await;
+        ctx.schedule_timer(std::time::Duration::from_millis(20))
+            .into_timer()
+            .await;
         Ok("done".to_string())
     };
     let orchestration_registry = OrchestrationRegistry::builder()
@@ -887,7 +892,9 @@ async fn sample_detached_orchestration_scheduling_fs() {
         .build();
 
     let chained = |ctx: OrchestrationContext, input: String| async move {
-        ctx.schedule_timer(std::time::Duration::from_millis(5)).into_timer().await;
+        ctx.schedule_timer(std::time::Duration::from_millis(5))
+            .into_timer()
+            .await;
         Ok(ctx
             .schedule_activity("Echo", input)
             .into_activity()
@@ -1471,9 +1478,10 @@ async fn sample_versioning_continue_as_new_upgrade_fs() {
         .read_with_execution("inst-can-upgrade", 1)
         .await
         .expect("read_with_execution should succeed");
-    assert!(e1
-        .iter()
-        .any(|e| matches!(&e.kind, duroxide::EventKind::OrchestrationContinuedAsNew { .. })));
+    assert!(e1.iter().any(|e| matches!(
+        &e.kind,
+        duroxide::EventKind::OrchestrationContinuedAsNew { .. }
+    )));
     // Exec2 must start with the v1-marked payload, proving v1 ran first and handed off via CAN
     let e2 = store
         .read_with_execution("inst-can-upgrade", 2)
