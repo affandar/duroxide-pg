@@ -2,13 +2,15 @@
 
 A PostgreSQL-based provider implementation for [Duroxide](https://github.com/affandar/duroxide), a durable task orchestration framework for Rust.
 
+> **Note:** See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
+
 ## Installation
 
 Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-duroxide-pg = "0.1.0"
+duroxide-pg = "0.1"
 ```
 
 ## Usage
