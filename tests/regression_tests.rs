@@ -132,7 +132,7 @@ async fn test_parallel_suborchestrations_no_deadlock() {
 
     // Use fast polling to increase chance of concurrent operations
     let options = RuntimeOptions {
-        dispatcher_idle_sleep: Duration::from_millis(1),
+        dispatcher_min_poll_interval: Duration::from_millis(1),
         ..Default::default()
     };
 
@@ -247,7 +247,7 @@ async fn test_parallel_suborchestrations_stress() {
         .build();
 
     let options = RuntimeOptions {
-        dispatcher_idle_sleep: Duration::from_millis(1),
+        dispatcher_min_poll_interval: Duration::from_millis(1),
         ..Default::default()
     };
 

@@ -146,9 +146,9 @@ pub async fn run_single_test(
         .register("FanoutWorkflow", orchestration)
         .build();
 
-    // Use custom runtime options with specified idle sleep
+    // Use custom runtime options with specified poll interval
     let options = RuntimeOptions {
-        dispatcher_idle_sleep: Duration::from_millis(idle_sleep_ms),
+        dispatcher_min_poll_interval: Duration::from_millis(idle_sleep_ms),
         orchestration_concurrency: orch_conc,
         worker_concurrency: worker_conc,
         ..Default::default()

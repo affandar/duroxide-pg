@@ -162,7 +162,7 @@ pub async fn test_create_execution(
 
     // Fetch to get lock token
     let item = provider
-        .fetch_orchestration_item(std::time::Duration::from_secs(30)) // 30 second lock timeout
+        .fetch_orchestration_item(std::time::Duration::from_secs(30), std::time::Duration::ZERO) // 30 second lock timeout
         .await
         .map_err(|e| e.message.clone())?
         .ok_or_else(|| "Failed to fetch orchestration item".to_string())?;

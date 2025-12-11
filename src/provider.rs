@@ -170,6 +170,7 @@ impl Provider for PostgresProvider {
     async fn fetch_orchestration_item(
         &self,
         lock_timeout: Duration,
+        _poll_timeout: Duration,
     ) -> Result<Option<OrchestrationItem>, ProviderError> {
         let start = std::time::Instant::now();
 
@@ -598,6 +599,7 @@ impl Provider for PostgresProvider {
     async fn fetch_work_item(
         &self,
         lock_timeout: Duration,
+        _poll_timeout: Duration,
     ) -> Result<Option<(WorkItem, String)>, ProviderError> {
         let start = std::time::Instant::now();
 

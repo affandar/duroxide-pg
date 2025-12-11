@@ -217,7 +217,7 @@ async fn test_enqueue_for_orchestrator() {
     // ⚠️ CRITICAL: Instance is NOT created on enqueue - must fetch and ack with metadata
     // Fetch the work item
     let item = provider
-        .fetch_orchestration_item(std::time::Duration::from_secs(30)) // 30 second lock timeout
+        .fetch_orchestration_item(std::time::Duration::from_secs(30), std::time::Duration::ZERO) // 30 second lock timeout
         .await
         .expect("fetch_orchestration_item should succeed")
         .expect("Should fetch enqueued work item");
@@ -310,7 +310,7 @@ async fn test_enqueue_and_dequeue_worker() {
 
     // Dequeue worker work
     let (dequeued_item, lock_token) = provider
-        .fetch_work_item(std::time::Duration::from_secs(30)) // 30 second lock timeout
+        .fetch_work_item(std::time::Duration::from_secs(30), std::time::Duration::ZERO) // 30 second lock timeout
         .await
         .expect("Should dequeue worker work")
         .expect("Should have a work item");
@@ -353,7 +353,7 @@ async fn test_fetch_orchestration_item_empty_queue() {
 
     // Fetch from empty queue should return None
     let item = provider
-        .fetch_orchestration_item(std::time::Duration::from_secs(30)) // 30 second lock timeout
+        .fetch_orchestration_item(std::time::Duration::from_secs(30), std::time::Duration::ZERO) // 30 second lock timeout
         .await
         .expect("fetch should succeed");
     assert!(item.is_none(), "Empty queue should return None");
@@ -456,7 +456,7 @@ async fn test_list_instances_and_executions() {
     // Fetch and ack both work items to create instances
     for (orchestration, instance) in [("Orch1", instance1), ("Orch2", instance2)] {
         let item = provider
-            .fetch_orchestration_item(std::time::Duration::from_secs(30)) // 30 second lock timeout
+            .fetch_orchestration_item(std::time::Duration::from_secs(30), std::time::Duration::ZERO) // 30 second lock timeout
             .await
             .expect("fetch_orchestration_item should succeed")
             .expect("Should fetch enqueued work item");
