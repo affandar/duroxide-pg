@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2025-12-19
+
+### Fixed
+
+- Fix timestamp consistency issue causing intermittent test failures
+  - All stored procedures now receive timestamps from Rust (`p_now_ms`) instead of using database `NOW()`
+  - Eliminates clock skew and precision mismatch between application and database time
+  - Affected procedures: `enqueue_worker_work`, `abandon_work_item`, `abandon_orchestration_item`, `ack_worker`, `ack_orchestration`, `enqueue_orchestration_work`, `enqueue_completion`, `enqueue_message`
+
+### Added
+
+- New migration `0006_use_rust_timestamps.sql` - updates all stored procedures to use Rust-provided timestamps
+
+### Notes
+
+- Total validation tests: 93 (25 basic + 63 provider + 2 regression + 3 doc tests)
+- This fix resolves timing-related failures that varied by database latency
+
 ## [0.1.7] - 2025-12-19
 
 ### Added

@@ -58,11 +58,11 @@ let provider = PostgresProvider::new_with_schema(
 - Poison message detection with attempt count tracking
 - Lock renewal for long-running orchestrations and activities
 
-## Latest Release (0.1.6)
+## Latest Release (0.1.8)
 
-- Updated to duroxide 0.1.4
-- Added `name()` and `version()` Provider trait methods for diagnostics
-- Added long-polling design document (implementation pending)
+- Fix timestamp consistency issue causing intermittent test failures
+- All stored procedures now use Rust-provided timestamps instead of database `NOW()`
+- New migration `0006_use_rust_timestamps.sql`
 - See [CHANGELOG.md](CHANGELOG.md) for full version history
 
 ## License

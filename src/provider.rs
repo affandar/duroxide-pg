@@ -442,13 +442,15 @@ impl Provider for PostgresProvider {
         ignore_attempt: bool,
     ) -> Result<(), ProviderError> {
         let start = std::time::Instant::now();
+        let now_ms = Self::now_millis();
         let delay_param: Option<i64> = delay.map(|d| d.as_millis() as i64);
 
         let instance_id = match sqlx::query_scalar::<_, String>(&format!(
-            "SELECT {}.abandon_orchestration_item($1, $2, $3)",
+            "SELECT {}.abandon_orchestration_item($1, $2, $3, $4)",
             self.schema_name
         ))
         .bind(lock_token)
+        .bind(now_ms)
         .bind(delay_param)
         .bind(ignore_attempt)
         .fetch_one(&*self.pool)
@@ -591,11 +593,14 @@ impl Provider for PostgresProvider {
             )
         })?;
 
+        let now_ms = Self::now_millis();
+
         sqlx::query(&format!(
-            "SELECT {}.enqueue_worker_work($1)",
+            "SELECT {}.enqueue_worker_work($1, $2)",
             self.schema_name
         ))
         .bind(work_item)
+        .bind(now_ms)
         .execute(&*self.pool)
         .await
         .map_err(|e| {
@@ -708,14 +713,17 @@ impl Provider for PostgresProvider {
             ProviderError::permanent("ack_worker", format!("Failed to serialize completion: {e}"))
         })?;
 
+        let now_ms = Self::now_millis();
+
         // Call stored procedure to atomically delete worker item and enqueue completion
         sqlx::query(&format!(
-            "SELECT {}.ack_worker($1, $2, $3)",
+            "SELECT {}.ack_worker($1, $2, $3, $4)",
             self.schema_name
         ))
         .bind(token)
         .bind(instance_id)
         .bind(completion_json)
+        .bind(now_ms)
         .execute(&*self.pool)
         .await
         .map_err(|e| {
@@ -812,13 +820,15 @@ impl Provider for PostgresProvider {
         ignore_attempt: bool,
     ) -> Result<(), ProviderError> {
         let start = std::time::Instant::now();
+        let now_ms = Self::now_millis();
         let delay_param: Option<i64> = delay.map(|d| d.as_millis() as i64);
 
         match sqlx::query(&format!(
-            "SELECT {}.abandon_work_item($1, $2, $3)",
+            "SELECT {}.abandon_work_item($1, $2, $3, $4)",
             self.schema_name
         ))
         .bind(token)
+        .bind(now_ms)
         .bind(delay_param)
         .bind(ignore_attempt)
         .execute(&*self.pool)
