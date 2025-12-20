@@ -210,9 +210,11 @@ BEGIN
             RETURN QUERY
             SELECT 
                 (SELECT COUNT(*)::BIGINT FROM %I.orchestrator_queue 
-                 WHERE lock_token IS NULL OR locked_until <= p_now_ms) as orchestrator_queue,
+                 WHERE visible_at <= TO_TIMESTAMP(p_now_ms / 1000.0)
+                   AND (lock_token IS NULL OR locked_until <= p_now_ms)) as orchestrator_queue,
                 (SELECT COUNT(*)::BIGINT FROM %I.worker_queue 
-                 WHERE lock_token IS NULL OR locked_until <= p_now_ms) as worker_queue;
+                 WHERE visible_at <= TO_TIMESTAMP(p_now_ms / 1000.0)
+                   AND (lock_token IS NULL OR locked_until <= p_now_ms)) as worker_queue;
         END;
         $get_queue_depths$ LANGUAGE plpgsql;
     ', v_schema_name, v_schema_name, v_schema_name);
@@ -227,8 +229,8 @@ BEGIN
         CREATE OR REPLACE FUNCTION %I.enqueue_worker_work(p_work_item TEXT)
         RETURNS VOID AS $enq_worker$
         BEGIN
-            INSERT INTO %I.worker_queue (work_item, created_at)
-            VALUES (p_work_item, NOW());
+            INSERT INTO %I.worker_queue (work_item, visible_at, created_at)
+            VALUES (p_work_item, NOW(), NOW());
         END;
         $enq_worker$ LANGUAGE plpgsql;
     ', v_schema_name, v_schema_name);
@@ -295,6 +297,7 @@ BEGIN
     -- Procedure: fetch_work_item
     -- Fetches and locks a worker queue item in a single roundtrip
     -- Returns attempt_count for poison message detection (duroxide 0.1.2)
+    -- Updated in duroxide 0.1.5: checks visible_at for delayed visibility
     EXECUTE format('DROP FUNCTION IF EXISTS %I.fetch_work_item(BIGINT, BIGINT)', v_schema_name);
 
     EXECUTE format('
@@ -310,9 +313,13 @@ BEGIN
         DECLARE
             v_id BIGINT;
         BEGIN
+            -- Item is available if:
+            -- 1. visible_at <= now (not delayed)
+            -- 2. AND (lock_token IS NULL OR locked_until <= now) (not locked or lock expired)
             SELECT q.id INTO v_id
             FROM %I.worker_queue q
-            WHERE q.lock_token IS NULL OR q.locked_until <= p_now_ms
+            WHERE q.visible_at <= TO_TIMESTAMP(p_now_ms / 1000.0)
+              AND (q.lock_token IS NULL OR q.locked_until <= p_now_ms)
             ORDER BY q.id
             LIMIT 1
             FOR UPDATE OF q SKIP LOCKED;
@@ -343,7 +350,7 @@ BEGIN
     -- Procedure: abandon_work_item
     -- Releases work item lock without completing, with optional delay and attempt count handling
     -- Added in duroxide 0.1.2 for explicit work item abandonment
-    -- Fixed in duroxide 0.1.3: when delay is provided, keep lock_token to prevent immediate refetch
+    -- Updated in duroxide 0.1.5: uses visible_at for delay instead of keeping locked_until
     EXECUTE format('DROP FUNCTION IF EXISTS %I.abandon_work_item(TEXT, BIGINT, BOOLEAN)', v_schema_name);
 
     EXECUTE format('
@@ -355,37 +362,30 @@ BEGIN
         RETURNS VOID AS $abandon_worker$
         DECLARE
             v_rows_affected INTEGER;
-            v_locked_until BIGINT;
+            v_visible_at TIMESTAMPTZ;
         BEGIN
+            -- Calculate visible_at based on delay
             IF p_delay_ms IS NOT NULL AND p_delay_ms > 0 THEN
-                -- Delay provided: keep lock_token, just update locked_until
-                -- This prevents immediate refetch while deferring the retry
-                v_locked_until := (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT + p_delay_ms;
-                
-                IF p_ignore_attempt THEN
-                    UPDATE %I.worker_queue
-                    SET locked_until = v_locked_until,
-                        attempt_count = GREATEST(0, attempt_count - 1)
-                    WHERE lock_token = p_lock_token;
-                ELSE
-                    UPDATE %I.worker_queue
-                    SET locked_until = v_locked_until
-                    WHERE lock_token = p_lock_token;
-                END IF;
+                v_visible_at := NOW() + (p_delay_ms || '' milliseconds'')::INTERVAL;
             ELSE
-                -- No delay: clear lock_token for immediate availability
-                IF p_ignore_attempt THEN
-                    UPDATE %I.worker_queue
-                    SET lock_token = NULL,
-                        locked_until = NULL,
-                        attempt_count = GREATEST(0, attempt_count - 1)
-                    WHERE lock_token = p_lock_token;
-                ELSE
-                    UPDATE %I.worker_queue
-                    SET lock_token = NULL,
-                        locked_until = NULL
-                    WHERE lock_token = p_lock_token;
-                END IF;
+                v_visible_at := NOW();
+            END IF;
+
+            -- Always clear lock_token and locked_until when abandoning
+            -- Use visible_at to control when item becomes available again
+            IF p_ignore_attempt THEN
+                UPDATE %I.worker_queue
+                SET lock_token = NULL,
+                    locked_until = NULL,
+                    visible_at = v_visible_at,
+                    attempt_count = GREATEST(0, attempt_count - 1)
+                WHERE lock_token = p_lock_token;
+            ELSE
+                UPDATE %I.worker_queue
+                SET lock_token = NULL,
+                    locked_until = NULL,
+                    visible_at = v_visible_at
+                WHERE lock_token = p_lock_token;
             END IF;
 
             GET DIAGNOSTICS v_rows_affected = ROW_COUNT;
@@ -395,7 +395,7 @@ BEGIN
             END IF;
         END;
         $abandon_worker$ LANGUAGE plpgsql;
-    ', v_schema_name, v_schema_name, v_schema_name, v_schema_name, v_schema_name);
+    ', v_schema_name, v_schema_name, v_schema_name);
 
     -- Procedure: enqueue_orchestrator_work
     -- Enqueues work to orchestrator queue

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2025-12-19
+
+### Added
+
+- Worker queue visibility control via `visible_at` column (duroxide 0.1.5)
+  - Added `visible_at` column to `worker_queue` table
+  - `fetch_work_item` now checks `visible_at <= now` in addition to lock status
+  - `abandon_work_item` with delay now sets `visible_at` instead of keeping `locked_until`
+  - Cleaner semantics: `visible_at` controls visibility, `locked_until` only for lock expiry
+- New migration `0005_add_visible_at_to_worker_queue.sql`
+- 2 new provider validation tests:
+  - `test_worker_item_immediate_visibility` - Verify newly enqueued items are immediately visible
+  - `test_worker_delayed_visibility_skips_future_items` - Verify items with future visible_at are skipped
+
+### Changed
+
+- Updated to duroxide 0.1.5
+
+### Notes
+
+- Total validation tests: 64 (up from 62)
+
 ## [0.1.6] - 2024-12-13
 
 ### Added

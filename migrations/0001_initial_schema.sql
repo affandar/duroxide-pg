@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS orchestrator_queue (
 CREATE TABLE IF NOT EXISTS worker_queue (
     id BIGSERIAL PRIMARY KEY,
     work_item TEXT NOT NULL, -- JSON serialized WorkItem
+    visible_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     lock_token TEXT,
     locked_until BIGINT, -- Unix timestamp in milliseconds
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS instance_locks (
 CREATE INDEX IF NOT EXISTS idx_orch_visible ON orchestrator_queue(visible_at, lock_token);
 CREATE INDEX IF NOT EXISTS idx_orch_instance ON orchestrator_queue(instance_id);
 CREATE INDEX IF NOT EXISTS idx_orch_lock ON orchestrator_queue(lock_token);
+CREATE INDEX IF NOT EXISTS idx_worker_visible ON worker_queue(visible_at, lock_token);
 CREATE INDEX IF NOT EXISTS idx_worker_available ON worker_queue(lock_token, id);
 CREATE INDEX IF NOT EXISTS idx_instance_locks_locked_until ON instance_locks(locked_until);
 CREATE INDEX IF NOT EXISTS idx_history_lookup ON history(instance_id, execution_id, event_id);

@@ -211,6 +211,8 @@ mod queue_semantics_tests {
     provider_validation_test!(queue_semantics::test_worker_ack_atomicity);
     provider_validation_test!(queue_semantics::test_timer_delayed_visibility);
     provider_validation_test!(queue_semantics::test_lost_lock_token_handling);
+    provider_validation_test!(queue_semantics::test_worker_item_immediate_visibility);
+    provider_validation_test!(queue_semantics::test_worker_delayed_visibility_skips_future_items);
 }
 
 mod management_tests {
