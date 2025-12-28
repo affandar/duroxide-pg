@@ -715,7 +715,7 @@ impl Provider for PostgresProvider {
             // Extract instance ID from completion WorkItem
             let instance_id = match &completion {
                 WorkItem::ActivityCompleted { instance, .. }
-                | WorkItem::ActivityFailed { instance, .. } => instance.clone(),
+                | WorkItem::ActivityFailed { instance, .. } => instance,
                 _ => {
                     error!(
                         target = "duroxide::providers::postgres",
@@ -742,7 +742,7 @@ impl Provider for PostgresProvider {
                 self.schema_name
             ))
             .bind(token)
-            .bind(&instance_id)
+            .bind(instance_id)
             .bind(completion_json)
             .bind(now_ms)
             .execute(&*self.pool)
