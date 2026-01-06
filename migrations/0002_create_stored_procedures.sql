@@ -16,6 +16,8 @@ BEGIN
     -- Procedure: cleanup_schema
     -- Drops all tables in the schema (for testing only)
     -- SAFETY: Never drops the "public" schema itself, only tables within it
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.cleanup_schema()', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.cleanup_schema()
         RETURNS VOID AS $cleanup$
@@ -38,6 +40,8 @@ BEGIN
 
     -- Procedure: list_instances
     -- Returns all instance IDs ordered by creation date (newest first)
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.list_instances()', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.list_instances()
         RETURNS TABLE(instance_id TEXT) AS $list_inst$
@@ -52,6 +56,8 @@ BEGIN
 
     -- Procedure: list_executions
     -- Returns all execution IDs for a given instance, ordered by execution_id
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.list_executions(TEXT)', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.list_executions(p_instance_id TEXT)
         RETURNS TABLE(execution_id BIGINT) AS $list_exec$
@@ -67,6 +73,8 @@ BEGIN
 
     -- Procedure: latest_execution_id
     -- Returns the current execution ID for a given instance
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.latest_execution_id(TEXT)', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.latest_execution_id(p_instance_id TEXT)
         RETURNS BIGINT AS $latest_exec$
@@ -84,6 +92,8 @@ BEGIN
 
     -- Procedure: list_instances_by_status
     -- Returns instance IDs filtered by execution status
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.list_instances_by_status(TEXT)', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.list_instances_by_status(p_status TEXT)
         RETURNS TABLE(instance_id TEXT) AS $list_by_status$
@@ -105,6 +115,8 @@ BEGIN
 
     -- Procedure: get_instance_info
     -- Returns comprehensive instance information with execution status
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.get_instance_info(TEXT)', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.get_instance_info(p_instance_id TEXT)
         RETURNS TABLE(
@@ -133,6 +145,8 @@ BEGIN
 
     -- Procedure: get_execution_info
     -- Returns execution information with event count
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.get_execution_info(TEXT, BIGINT)', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.get_execution_info(
             p_instance_id TEXT,
@@ -162,6 +176,8 @@ BEGIN
 
     -- Procedure: get_system_metrics
     -- Returns system-wide statistics
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.get_system_metrics()', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.get_system_metrics()
         RETURNS TABLE(
@@ -200,6 +216,8 @@ BEGIN
 
     -- Procedure: get_queue_depths
     -- Returns current queue depths (available items)
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.get_queue_depths(BIGINT)', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.get_queue_depths(p_now_ms BIGINT)
         RETURNS TABLE(
@@ -225,6 +243,8 @@ BEGIN
 
     -- Procedure: enqueue_worker_work
     -- Inserts a work item into the worker queue
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.enqueue_worker_work(TEXT)', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.enqueue_worker_work(p_work_item TEXT)
         RETURNS VOID AS $enq_worker$
@@ -238,6 +258,8 @@ BEGIN
     -- Procedure: ack_worker
     -- Atomically deletes worker queue item and optionally enqueues completion to orchestrator queue
     -- If p_completion_json is NULL, just deletes without enqueueing (for cancelled activities)
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.ack_worker(TEXT, TEXT, TEXT)', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.ack_worker(
             p_lock_token TEXT,
@@ -406,6 +428,8 @@ BEGIN
     -- Procedure: enqueue_orchestrator_work
     -- Enqueues work to orchestrator queue
     -- ⚠️ CRITICAL: DO NOT create instance here - instance creation happens via ack_orchestration_item metadata
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.enqueue_orchestrator_work(TEXT, TEXT, TIMESTAMPTZ, TEXT, TEXT, BIGINT)', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.enqueue_orchestrator_work(
             p_instance_id TEXT,
@@ -607,6 +631,8 @@ BEGIN
     -- Procedure: ack_orchestration_item
     -- Acknowledges orchestration item in a single atomic operation
     -- Combines 8-9 queries into one roundtrip
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.ack_orchestration_item(TEXT, BIGINT, JSONB, JSONB, JSONB, JSONB)', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.ack_orchestration_item(
             p_lock_token TEXT,

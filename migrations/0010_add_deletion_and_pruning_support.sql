@@ -246,6 +246,8 @@ BEGIN
 
     -- Procedure: list_children
     -- Returns direct children of an instance (instances where parent_instance_id = given instance)
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.list_children(TEXT)', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.list_children(p_instance_id TEXT)
         RETURNS TABLE(child_instance_id TEXT) AS $list_children$
@@ -262,6 +264,8 @@ BEGIN
     -- Procedure: get_parent_id
     -- Returns the parent_instance_id for a given instance, or NULL for root orchestrations
     -- Raises exception if instance doesn''t exist
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.get_parent_id(TEXT)', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.get_parent_id(p_instance_id TEXT)
         RETURNS TEXT AS $get_parent$
@@ -289,6 +293,8 @@ BEGIN
     -- Procedure: delete_instances_atomic
     -- Atomically deletes a batch of instances with orphan detection
     -- Returns counts of deleted rows
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.delete_instances_atomic(TEXT[], BOOLEAN)', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.delete_instances_atomic(
             p_instance_ids TEXT[],
@@ -399,6 +405,8 @@ BEGIN
     -- Procedure: prune_executions
     -- Prunes old executions from a single instance
     -- Never deletes the current execution
+    EXECUTE format('DROP FUNCTION IF EXISTS %I.prune_executions(TEXT, INTEGER, BIGINT)', v_schema_name);
+
     EXECUTE format('
         CREATE OR REPLACE FUNCTION %I.prune_executions(
             p_instance_id TEXT,
