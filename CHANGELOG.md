@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12] - 2026-01-06
+
+### Fixed
+
+- Fix migration system to handle function signature changes
+  - Add `DROP FUNCTION IF EXISTS` before all `CREATE OR REPLACE FUNCTION` statements
+  - PostgreSQL cannot replace functions when return type changes without explicit DROP
+  - Affected migrations: 0002 (13 functions), 0010 (4 functions)
+
+### Notes
+
+- Total validation tests: 135 (unchanged)
+- This fix resolves test failures when running against existing public schema
+
 ## [0.1.11] - 2026-01-05
 
 ### Changed

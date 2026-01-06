@@ -58,13 +58,11 @@ let provider = PostgresProvider::new_with_schema(
 - Poison message detection with attempt count tracking
 - Lock renewal for long-running orchestrations and activities
 
-## Latest Release (0.1.11)
+## Latest Release (0.1.12)
 
-- Update to duroxide 0.1.9 with full Management API support
-- Add cascade deletion for orchestration hierarchies (`delete_instance`, `delete_instance_bulk`)
-- Add execution pruning (`prune_executions`, `prune_executions_bulk`)
-- Track parent/child relationships via `parent_instance_id` column
-- 99 provider validation tests (19 new)
+- Fix migration system to handle function signature changes (DROP before CREATE)
+- Resolves test failures when running against existing public schema
+- 135 provider validation tests passing
 - See [CHANGELOG.md](CHANGELOG.md) for full version history
 
 ## License
