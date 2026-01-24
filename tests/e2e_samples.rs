@@ -6,7 +6,6 @@ use duroxide::runtime::registry::ActivityRegistry;
 use duroxide::runtime::{self};
 use duroxide::{ActivityContext, Client, OrchestrationContext, OrchestrationRegistry};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::sync::Once;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
@@ -54,12 +53,12 @@ async fn sample_hello_world_fs() {
         ctx.trace_info("hello_world started");
         let res = ctx
             .schedule_activity("Hello", "Rust")
-            .into_activity()
+            
             .await?;
         ctx.trace_info(format!("hello_world result={res} "));
         let res1 = ctx
             .schedule_activity("Hello", input)
-            .into_activity()
+            
             .await?;
         ctx.trace_info(format!("hello_world result={res1} "));
         Ok(res1)
@@ -71,7 +70,7 @@ async fn sample_hello_world_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -124,21 +123,21 @@ async fn sample_basic_control_flow_fs() {
     let orchestration = |ctx: OrchestrationContext, _input: String| async move {
         let flag = ctx
             .schedule_activity("GetFlag", "")
-            .into_activity()
+            
             .await
             .unwrap();
         ctx.trace_info(format!("control_flow flag decided = {flag}"));
         if flag == "yes" {
             Ok(ctx
                 .schedule_activity("SayYes", "")
-                .into_activity()
-                .await
+                
+            .await
                 .unwrap())
         } else {
             Ok(ctx
                 .schedule_activity("SayNo", "")
-                .into_activity()
-                .await
+                
+            .await
                 .unwrap())
         }
     };
@@ -149,7 +148,7 @@ async fn sample_basic_control_flow_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -198,8 +197,8 @@ async fn sample_loop_fs() {
         for i in 0..3 {
             acc = ctx
                 .schedule_activity("Append", acc)
-                .into_activity()
-                .await
+                
+            .await
                 .unwrap();
             ctx.trace_info(format!("loop iteration {i} completed acc={acc}"));
         }
@@ -212,7 +211,7 @@ async fn sample_loop_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -269,7 +268,7 @@ async fn sample_error_handling_fs() {
     let orchestration = |ctx: OrchestrationContext, _input: String| async move {
         match ctx
             .schedule_activity("Fragile", "bad")
-            .into_activity()
+            
             .await
         {
             Ok(v) => {
@@ -280,8 +279,8 @@ async fn sample_error_handling_fs() {
                 ctx.trace_warn(format!("fragile failed error={e}"));
                 let rec = ctx
                     .schedule_activity("Recover", "")
-                    .into_activity()
-                    .await
+                    
+            .await
                     .unwrap();
                 if rec != "recovered" {
                     ctx.trace_error(format!("unexpected recovery value={rec}"));
@@ -297,7 +296,7 @@ async fn sample_error_handling_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -350,12 +349,10 @@ async fn sample_timeout_with_timer_race_fs() {
     let orchestration = |ctx: OrchestrationContext, _input: String| async move {
         let act = ctx.schedule_activity("LongOp", "");
         let t = ctx.schedule_timer(std::time::Duration::from_millis(100));
-        let (_idx, out) = ctx.select(vec![act, t]).await;
-        match out {
-            duroxide::DurableOutput::Timer => Err("timeout".to_string()),
-            duroxide::DurableOutput::Activity(Ok(s)) => Ok(s),
-            duroxide::DurableOutput::Activity(Err(e)) => Err(e),
-            other => panic!("unexpected output: {other:?}"),
+        match ctx.select2(act, t).await {
+            duroxide::Either2::Second(()) => Err("timeout".to_string()),
+            duroxide::Either2::First(Ok(s)) => Ok(s),
+            duroxide::Either2::First(Err(e)) => Err(e),
         }
     };
 
@@ -365,7 +362,7 @@ async fn sample_timeout_with_timer_race_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -414,13 +411,10 @@ async fn sample_select2_activity_vs_external_fs() {
     let orchestration = |ctx: OrchestrationContext, _input: String| async move {
         let act = ctx.schedule_activity("Sleep", "");
         let evt = ctx.schedule_wait("Go");
-        let (idx, out) = ctx.select2(act, evt).await;
-        // Demonstrate using the index to branch
-        match (idx, out) {
-            (0, duroxide::DurableOutput::Activity(Ok(s))) => Ok(format!("activity:{s}")),
-            (1, duroxide::DurableOutput::External(payload)) => Ok(format!("event:{payload}")),
-            (0, duroxide::DurableOutput::Activity(Err(e))) => Err(e),
-            other => panic!("unexpected: {other:?}"),
+        match ctx.select2(act, evt).await {
+            duroxide::Either2::First(Ok(s)) => Ok(format!("activity:{s}")),
+            duroxide::Either2::Second(payload) => Ok(format!("event:{payload}")),
+            duroxide::Either2::First(Err(e)) => Err(e),
         }
     };
 
@@ -430,7 +424,7 @@ async fn sample_select2_activity_vs_external_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -497,11 +491,7 @@ async fn dtf_legacy_gabbar_greetings_fs() {
         let outs = ctx.join(vec![a, b]).await;
         let mut vals: Vec<String> = outs
             .into_iter()
-            .map(|o| match o {
-                duroxide::DurableOutput::Activity(Ok(s)) => s,
-                duroxide::DurableOutput::Activity(Err(e)) => panic!("activity failed: {e}"),
-                other => panic!("unexpected output: {other:?}"),
-            })
+            .map(|o| o.expect("activity failed"))
             .collect();
         // For a stable assertion build a canonical order
         vals.sort();
@@ -514,7 +504,7 @@ async fn dtf_legacy_gabbar_greetings_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -570,7 +560,7 @@ async fn sample_system_activities_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -620,7 +610,6 @@ async fn sample_status_polling_fs() {
     let activity_registry = ActivityRegistry::builder().build();
     let orchestration = |ctx: OrchestrationContext, _input: String| async move {
         ctx.schedule_timer(std::time::Duration::from_millis(20))
-            .into_timer()
             .await;
         Ok("done".to_string())
     };
@@ -630,7 +619,7 @@ async fn sample_status_polling_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -678,7 +667,7 @@ async fn sample_sub_orchestration_basic_fs() {
     let child_upper = |ctx: OrchestrationContext, input: String| async move {
         let up = ctx
             .schedule_activity("Upper", input)
-            .into_activity()
+            
             .await
             .unwrap();
         Ok(up)
@@ -686,7 +675,7 @@ async fn sample_sub_orchestration_basic_fs() {
     let parent = |ctx: OrchestrationContext, input: String| async move {
         let r = ctx
             .schedule_sub_orchestration("ChildUpper", input)
-            .into_sub_orchestration()
+            
             .await
             .unwrap();
         Ok(format!("parent:{r}"))
@@ -699,7 +688,7 @@ async fn sample_sub_orchestration_basic_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -746,7 +735,7 @@ async fn sample_sub_orchestration_fanout_fs() {
     let child_sum = |ctx: OrchestrationContext, input: String| async move {
         let s = ctx
             .schedule_activity("Add", input)
-            .into_activity()
+            
             .await
             .unwrap();
         Ok(s)
@@ -757,11 +746,7 @@ async fn sample_sub_orchestration_fanout_fs() {
         let outs = ctx.join(vec![a, b]).await;
         let mut nums: Vec<i64> = outs
             .into_iter()
-            .map(|o| match o {
-                duroxide::DurableOutput::SubOrchestration(Ok(s)) => s.parse::<i64>().unwrap(),
-                duroxide::DurableOutput::SubOrchestration(Err(e)) => panic!("child failed: {e}"),
-                other => panic!("unexpected output: {other:?}"),
-            })
+            .map(|o| o.expect("child failed").parse::<i64>().unwrap())
             .collect();
         let total: i64 = nums.drain(..).sum();
         Ok(format!("total={total}"))
@@ -774,7 +759,7 @@ async fn sample_sub_orchestration_fanout_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -819,14 +804,14 @@ async fn sample_sub_orchestration_chained_fs() {
     let leaf = |ctx: OrchestrationContext, input: String| async move {
         Ok(ctx
             .schedule_activity("AppendX", input)
-            .into_activity()
+            
             .await
             .unwrap())
     };
     let mid = |ctx: OrchestrationContext, input: String| async move {
         let r = ctx
             .schedule_sub_orchestration("Leaf", input)
-            .into_sub_orchestration()
+            
             .await
             .unwrap();
         Ok(format!("{r}-mid"))
@@ -834,7 +819,7 @@ async fn sample_sub_orchestration_chained_fs() {
     let root = |ctx: OrchestrationContext, input: String| async move {
         let r = ctx
             .schedule_sub_orchestration("Mid", input)
-            .into_sub_orchestration()
+            
             .await
             .unwrap();
         Ok(format!("root:{r}"))
@@ -848,7 +833,7 @@ async fn sample_sub_orchestration_chained_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -893,11 +878,10 @@ async fn sample_detached_orchestration_scheduling_fs() {
 
     let chained = |ctx: OrchestrationContext, input: String| async move {
         ctx.schedule_timer(std::time::Duration::from_millis(5))
-            .into_timer()
             .await;
         Ok(ctx
             .schedule_activity("Echo", input)
-            .into_activity()
+            
             .await
             .unwrap())
     };
@@ -914,7 +898,7 @@ async fn sample_detached_orchestration_scheduling_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -987,7 +971,7 @@ async fn sample_continue_as_new_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -1052,7 +1036,7 @@ async fn sample_typed_activity_and_orchestration_fs() {
     let orchestration = |ctx: OrchestrationContext, req: AddReq| async move {
         let out: AddRes = ctx
             .schedule_activity_typed::<AddReq, AddRes>("Add", &req)
-            .into_activity_typed::<AddRes>()
+            
             .await?;
         Ok(out)
     };
@@ -1062,7 +1046,7 @@ async fn sample_typed_activity_and_orchestration_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -1097,7 +1081,6 @@ async fn sample_typed_event_fs() {
     let orch = |ctx: OrchestrationContext, _in: ()| async move {
         let ack: Ack = ctx
             .schedule_wait_typed::<Ack>("Ready")
-            .into_event_typed::<Ack>()
             .await;
         Ok::<_, String>(serde_json::to_string(&ack).unwrap())
     };
@@ -1107,7 +1090,7 @@ async fn sample_typed_event_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -1163,18 +1146,10 @@ async fn sample_mixed_string_and_typed_typed_orch_fs() {
         // Kick off a typed activity and a string activity, race them with deterministic select
         let f_typed = ctx.schedule_activity_typed::<AddReq, AddRes>("Add", &req);
         let f_str = ctx.schedule_activity("Upper", "hello");
-        let (_idx, out) = ctx.select(vec![f_typed, f_str]).await;
-        let s = match out {
-            duroxide::DurableOutput::Activity(Ok(raw)) => {
-                // raw is either typed AddRes JSON or plain string result
-                if let Ok(v) = serde_json::from_str::<AddRes>(&raw) {
-                    format!("sum={}", v.sum)
-                } else {
-                    format!("up={raw}")
-                }
-            }
-            duroxide::DurableOutput::Activity(Err(e)) => return Err(e),
-            other => panic!("unexpected output: {other:?}"),
+        let s = match ctx.select2(f_typed, f_str).await {
+            duroxide::Either2::First(Ok(add_res)) => format!("sum={}", add_res.sum),
+            duroxide::Either2::Second(Ok(upper_res)) => format!("up={upper_res}"),
+            duroxide::Either2::First(Err(e)) | duroxide::Either2::Second(Err(e)) => return Err(e),
         };
         Ok::<_, String>(s)
     };
@@ -1184,7 +1159,7 @@ async fn sample_mixed_string_and_typed_typed_orch_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -1234,17 +1209,10 @@ async fn sample_mixed_string_and_typed_string_orch_fs() {
     let orch = |ctx: OrchestrationContext, _in: String| async move {
         let f_typed = ctx.schedule_activity_typed::<AddReq, AddRes>("Add", &AddReq { a: 5, b: 7 });
         let f_str = ctx.schedule_activity("Upper", "race");
-        let (_idx, out) = ctx.select(vec![f_typed, f_str]).await;
-        let s = match out {
-            duroxide::DurableOutput::Activity(Ok(raw)) => {
-                if let Ok(v) = serde_json::from_str::<AddRes>(&raw) {
-                    format!("sum={}", v.sum)
-                } else {
-                    format!("up={raw}")
-                }
-            }
-            duroxide::DurableOutput::Activity(Err(e)) => return Err(e),
-            other => panic!("unexpected output: {other:?}"),
+        let s = match ctx.select2(f_typed, f_str).await {
+            duroxide::Either2::First(Ok(add_res)) => format!("sum={}", add_res.sum),
+            duroxide::Either2::Second(Ok(upper_res)) => format!("up={upper_res}"),
+            duroxide::Either2::First(Err(e)) | duroxide::Either2::Second(Err(e)) => return Err(e),
         };
         Ok::<_, String>(s)
     };
@@ -1253,7 +1221,7 @@ async fn sample_mixed_string_and_typed_string_orch_fs() {
         .build();
 
     let rt =
-        runtime::Runtime::start_with_store(store.clone(), Arc::new(activity_registry), orch_reg)
+        runtime::Runtime::start_with_store(store.clone(), activity_registry, orch_reg)
             .await;
     let client = Client::new(store.clone());
     client
@@ -1299,7 +1267,7 @@ async fn sample_versioning_start_latest_vs_exact_fs() {
         .register_versioned("Versioned", "2.0.0", v2)
         .build();
     let acts = ActivityRegistry::builder().build();
-    let rt = runtime::Runtime::start_with_store(store.clone(), Arc::new(acts), reg.clone()).await;
+    let rt = runtime::Runtime::start_with_store(store.clone(), acts, reg.clone()).await;
 
     // With default policy (Latest), a new start should run v2
     let client = Client::new(store.clone());
@@ -1363,13 +1331,13 @@ async fn sample_versioning_sub_orchestration_explicit_vs_policy_fs() {
         // Explicit versioned call -> expect c1
         let a = ctx
             .schedule_sub_orchestration_versioned("Child", Some("1.0.0".to_string()), "exp")
-            .into_sub_orchestration()
+            
             .await
             .unwrap();
         // Policy-based call (Latest) -> expect c2
         let b = ctx
             .schedule_sub_orchestration("Child", "pol")
-            .into_sub_orchestration()
+            
             .await
             .unwrap();
         Ok(format!("{a}-{b}"))
@@ -1381,7 +1349,7 @@ async fn sample_versioning_sub_orchestration_explicit_vs_policy_fs() {
         .register_versioned("Child", "2.0.0", child_v2)
         .build();
     let acts = ActivityRegistry::builder().build();
-    let rt = runtime::Runtime::start_with_store(store.clone(), Arc::new(acts), reg).await;
+    let rt = runtime::Runtime::start_with_store(store.clone(), acts, reg).await;
     let client = Client::new(store.clone());
     client
         .start_orchestration("inst-sub-vers", "ParentVers", "")
@@ -1435,7 +1403,7 @@ async fn sample_versioning_continue_as_new_upgrade_fs() {
         .register_versioned("LongRunner", "2.0.0", v2)
         .build();
     let acts = ActivityRegistry::builder().build();
-    let rt = runtime::Runtime::start_with_store(store.clone(), Arc::new(acts), reg).await;
+    let rt = runtime::Runtime::start_with_store(store.clone(), acts, reg).await;
 
     // Start on v1; the first handle will resolve at the CAN boundary
     // Pin initial start to v1 explicitly to demonstrate upgrade via CAN; default policy remains Latest (v2)
@@ -1508,7 +1476,7 @@ async fn sample_cancellation_parent_cascades_to_children_fs() {
 
     // Child: waits forever (until canceled). This demonstrates cooperative cancellation via runtime.
     let child = |ctx: OrchestrationContext, _input: String| async move {
-        let _ = ctx.schedule_wait("Go").into_event().await;
+        let _ = ctx.schedule_wait("Go").await;
         Ok("done".to_string())
     };
 
@@ -1516,7 +1484,7 @@ async fn sample_cancellation_parent_cascades_to_children_fs() {
     let parent = |ctx: OrchestrationContext, _input: String| async move {
         let _ = ctx
             .schedule_sub_orchestration("ChildSample", "seed")
-            .into_sub_orchestration()
+            
             .await?;
         Ok::<_, String>("parent_done".to_string())
     };
@@ -1534,7 +1502,7 @@ async fn sample_cancellation_parent_cascades_to_children_fs() {
     };
     let rt = runtime::Runtime::start_with_options(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
         options,
     )
@@ -1661,7 +1629,7 @@ async fn sample_basic_error_handling_fs() {
         ctx.trace_info("Starting validation");
         let result = ctx
             .schedule_activity("ValidateInput", input)
-            .into_activity()
+            
             .await?;
         ctx.trace_info(format!("Validation result: {result}"));
         Ok(result)
@@ -1673,7 +1641,7 @@ async fn sample_basic_error_handling_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -1757,12 +1725,12 @@ async fn sample_nested_function_error_handling_fs() {
         ctx.trace_info("Starting processing");
         let processed = ctx
             .schedule_activity("ProcessData", data.to_string())
-            .into_activity()
+            
             .await?;
         ctx.trace_info("Starting formatting");
         let formatted = ctx
             .schedule_activity("FormatOutput", processed)
-            .into_activity()
+            
             .await?;
         Ok(formatted)
     }
@@ -1781,7 +1749,7 @@ async fn sample_nested_function_error_handling_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;
@@ -1866,7 +1834,7 @@ async fn sample_error_recovery_fs() {
 
         match ctx
             .schedule_activity("ProcessData", input.clone())
-            .into_activity()
+            
             .await
         {
             Ok(result) => {
@@ -1877,8 +1845,8 @@ async fn sample_error_recovery_fs() {
                 ctx.trace_info("Processing failed, logging error");
                 let _ = ctx
                     .schedule_activity("LogError", e.clone())
-                    .into_activity()
-                    .await;
+                    
+            .await;
                 Err(format!("Failed to process '{input}': {e}"))
             }
         }
@@ -1890,7 +1858,7 @@ async fn sample_error_recovery_fs() {
 
     let rt = runtime::Runtime::start_with_store(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
     )
     .await;

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13] - 2026-01-24
+
+### Changed
+
+- **BREAKING:** Update to duroxide 0.1.12 API with simplified future handling
+- `DurableFuture` now implements `Future` directly - no more `.into_activity()`, `.into_timer()`, etc.
+- `Runtime::start_with_store` and `start_with_options` now take `ActivityRegistry` directly (not `Arc<ActivityRegistry>`)
+- `ctx.select(vec![...])` replaced with `ctx.select2(f1, f2)` returning `Either2<T1, T2>`
+- `ctx.join(...)` now returns `Vec<T>` directly instead of `Vec<DurableOutput>`
+
+### Notes
+
+- Total validation tests: 99 (unchanged)
+- All 25 e2e sample tests passing
+- All 2 regression tests passing
+
 ## [0.1.12] - 2026-01-06
 
 ### Fixed

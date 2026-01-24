@@ -96,7 +96,7 @@ async fn test_parallel_suborchestrations_no_deadlock() {
     let child = |ctx: OrchestrationContext, input: String| async move {
         let result = ctx
             .schedule_activity("DoWork", input)
-            .into_activity()
+            
             .await?;
         Ok(result)
     };
@@ -116,10 +116,7 @@ async fn test_parallel_suborchestrations_no_deadlock() {
 
         let outputs: Vec<String> = results
             .into_iter()
-            .filter_map(|out| match out {
-                duroxide::DurableOutput::SubOrchestration(Ok(s)) => Some(s),
-                _ => None,
-            })
+            .filter_map(|out| out.ok())
             .collect();
 
         Ok(format!("completed:{}", outputs.len()))
@@ -138,7 +135,7 @@ async fn test_parallel_suborchestrations_no_deadlock() {
 
     let rt = runtime::Runtime::start_with_options(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
         options,
     )
@@ -225,7 +222,7 @@ async fn test_parallel_suborchestrations_stress() {
 
     let child = |ctx: OrchestrationContext, input: String| async move {
         ctx.schedule_activity("Work", input.clone())
-            .into_activity()
+            
             .await
     };
 
@@ -236,7 +233,7 @@ async fn test_parallel_suborchestrations_stress() {
         let results = ctx.join(futures).await;
         let count = results
             .iter()
-            .filter(|r| matches!(r, duroxide::DurableOutput::SubOrchestration(Ok(_))))
+            .filter(|r| r.is_ok())
             .count();
         Ok(format!("done:{count}"))
     };
@@ -253,7 +250,7 @@ async fn test_parallel_suborchestrations_stress() {
 
     let rt = runtime::Runtime::start_with_options(
         store.clone(),
-        Arc::new(activity_registry),
+        activity_registry,
         orchestration_registry,
         options,
     )
