@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.16] - 2026-01-25
+
+### Fixed
+
+- **REGRESSION FIX:** `prune_executions_bulk` now correctly includes running instances
+  - Bug: The query filtered to only terminal-state instances (`WHERE e.status IN ('Completed', 'Failed', 'ContinuedAsNew')`)
+  - This excluded running instances (like long-running actors using `ContinueAsNew`) that had old executions needing pruning
+  - Fix: Changed to `WHERE 1=1` to include all instances, matching SQLite provider behavior
+  - The underlying `prune_executions()` call already protects the current execution from being pruned
+  - This fix was previously on branch `fix/cleanup-schema-drops-functions` but was never merged to main
+
+- `cleanup_schema()` now drops all stored procedures in addition to tables
+  - Previously only dropped tables, leaving stored procedures orphaned when using public schema
+  - This was problematic because `DROP SCHEMA CASCADE` only runs for non-public schemas
+  - Now drops all 26 stored procedures for complete cleanup
+
+### Notes
+
+- Total validation tests: 135 (unchanged)
+- These fixes were previously on branch `fix/cleanup-schema-drops-functions` but never merged to main
+
 ## [0.1.15] - 2026-01-24
 
 ### Changed
