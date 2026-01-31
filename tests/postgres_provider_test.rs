@@ -321,6 +321,7 @@ mod cancellation_tests {
     provider_validation_test!(cancellation::test_renew_fails_when_entry_deleted);
     provider_validation_test!(cancellation::test_cancelling_nonexistent_activities_is_idempotent);
     provider_validation_test!(cancellation::test_batch_cancellation_deletes_multiple_activities);
+    provider_validation_test!(cancellation::test_same_activity_in_worker_items_and_cancelled_is_noop);
 }
 
 mod deletion_tests {
@@ -338,6 +339,7 @@ mod deletion_tests {
     provider_validation_test!(deletion::test_delete_instances_atomic_force);
     provider_validation_test!(deletion::test_delete_instances_atomic_orphan_detection);
     provider_validation_test!(deletion::test_force_delete_prevents_ack_recreation);
+    provider_validation_test!(deletion::test_stale_activity_after_delete_recreate);
 }
 
 mod prune_tests {
